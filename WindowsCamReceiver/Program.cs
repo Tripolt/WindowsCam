@@ -3,7 +3,6 @@ using System.Diagnostics;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
-using System.Threading.Channels;
 
 namespace WindowsCamReceiver;
 
@@ -238,13 +237,14 @@ internal sealed class MainForm : Form
             {
                 PropertyNameCaseInsensitive = true
             });
+            var streamFps = hello?.Fps > 0 ? hello.Fps : 30;
             if (hello is not null)
             {
                 InvokeUi(() => _streamLabel.Text = $"{hello.Codec} {hello.Width}x{hello.Height} {hello.Fps}fps");
             }
 
             _droppedFrames = 0;
-            _ffmpeg = StartProcess(FindTool("ffmpeg")!, BuildFfmpegArguments(), "ffmpeg");
+            _ffmpeg = StartProcess(FindTool("ffmpeg")!, BuildFfmpegArguments(streamFps), "ffmpeg");
             await Task.Delay(500, token);
             ThrowIfExited(_ffmpeg, "ffmpeg", _ffmpegLog);
 
@@ -334,16 +334,11 @@ internal sealed class MainForm : Form
     {
         using var pumpTokenSource = CancellationTokenSource.CreateLinkedTokenSource(token);
         var pumpToken = pumpTokenSource.Token;
-        var frames = Channel.CreateBounded<VideoFrame>(new BoundedChannelOptions(1)
-        {
-            SingleReader = true,
-            SingleWriter = true,
-            FullMode = BoundedChannelFullMode.Wait
-        });
+        var frames = new LiveFrameMailbox();
 
         var stopwatch = Stopwatch.StartNew();
         var reader = Task.Run(() => ReadFramesAsync(stream, frames, stopwatch, pumpToken), pumpToken);
-        var writer = Task.Run(() => WriteFramesAsync(frames.Reader, ffmpegInput, stopwatch, pumpToken), pumpToken);
+        var writer = Task.Run(() => WriteFramesAsync(frames, ffmpegInput, stopwatch, pumpToken), pumpToken);
 
         try
         {
@@ -354,54 +349,48 @@ internal sealed class MainForm : Form
         catch
         {
             await pumpTokenSource.CancelAsync();
-            frames.Writer.TryComplete();
+            frames.Complete();
             throw;
         }
     }
 
-    private async Task ReadFramesAsync(NetworkStream stream, Channel<VideoFrame> channel, Stopwatch stopwatch, CancellationToken token)
+    private async Task ReadFramesAsync(NetworkStream stream, LiveFrameMailbox frames, Stopwatch stopwatch, CancellationToken token)
     {
         try
         {
             while (!token.IsCancellationRequested)
             {
-                var frame = new VideoFrame(await ReadPacketAsync(stream, token), stopwatch.Elapsed);
-                if (channel.Writer.TryWrite(frame))
+                var dropped = frames.Publish(new VideoFrame(await ReadPacketAsync(stream, token), stopwatch.Elapsed));
+                if (dropped)
                 {
-                    continue;
-                }
-
-                if (channel.Reader.TryRead(out _))
-                {
-                    var dropped = Interlocked.Increment(ref _droppedFrames);
-                    if (dropped == 1 || dropped % 30 == 0)
+                    var droppedFrames = Interlocked.Increment(ref _droppedFrames);
+                    if (droppedFrames == 1 || droppedFrames % 30 == 0)
                     {
-                        Log($"Dropped {dropped} stale frame(s) to keep latency live.");
-                    }
-
-                    if (channel.Writer.TryWrite(frame))
-                    {
-                        continue;
+                        Log($"Dropped {droppedFrames} stale frame(s) to keep latency live.");
                     }
                 }
-
-                await channel.Writer.WriteAsync(frame, token);
             }
         }
         finally
         {
-            channel.Writer.TryComplete();
+            frames.Complete();
         }
     }
 
-    private async Task WriteFramesAsync(ChannelReader<VideoFrame> reader, Stream ffmpegInput, Stopwatch stopwatch, CancellationToken token)
+    private async Task WriteFramesAsync(LiveFrameMailbox frames, Stream ffmpegInput, Stopwatch stopwatch, CancellationToken token)
     {
         var waitingForKeyFrame = false;
         var lastDropCount = 0L;
         var lastStallLog = TimeSpan.Zero;
 
-        await foreach (var frame in reader.ReadAllAsync(token))
+        while (!token.IsCancellationRequested)
         {
+            var frame = await frames.ReadAsync(token);
+            if (frame is null)
+            {
+                return;
+            }
+
             var dropCount = Interlocked.Read(ref _droppedFrames);
             if (dropCount != lastDropCount)
             {
@@ -411,7 +400,7 @@ internal sealed class MainForm : Form
 
             if (waitingForKeyFrame)
             {
-                if (!H264AnnexB.IsKeyFrame(frame.Data))
+                if (!H264AnnexB.IsKeyFrame(frame.Value.Data))
                 {
                     continue;
                 }
@@ -420,26 +409,26 @@ internal sealed class MainForm : Form
                 Log("Recovered stream on next H.264 keyframe after dropping stale frames.");
             }
 
-            var age = stopwatch.Elapsed - frame.CapturedAt;
+            var age = stopwatch.Elapsed - frame.Value.CapturedAt;
             if (age > TimeSpan.FromMilliseconds(250) && stopwatch.Elapsed - lastStallLog > TimeSpan.FromSeconds(2))
             {
                 lastStallLog = stopwatch.Elapsed;
                 Log($"ffmpeg is {age.TotalMilliseconds:0}ms behind the live frame.");
             }
 
-            await ffmpegInput.WriteAsync(frame.Data, token);
+            await ffmpegInput.WriteAsync(frame.Value.Data, token);
             await ffmpegInput.FlushAsync(token);
         }
     }
 
-    private static string BuildFfmpegArguments()
+    private static string BuildFfmpegArguments(int fps)
     {
         return "-hide_banner -loglevel error " +
             "-fflags nobuffer+genpts -flags low_delay -avioflags direct " +
-            "-probesize 32 -analyzeduration 0 -use_wallclock_as_timestamps 1 " +
-            "-f h264 -i pipe:0 -an -c:v copy " +
+            "-probesize 32 -analyzeduration 0 -fpsprobesize 0 " +
+            $"-r {fps} -f h264 -i pipe:0 -an -c:v copy " +
             "-f mpegts -muxdelay 0 -muxpreload 0 -flush_packets 1 -max_delay 0 " +
-            $"\"{ObsUrl}?pkt_size=1316\"";
+            $"\"{ObsUrl}?pkt_size=1316&buffer_size=65536\"";
     }
 
     private static async Task<byte[]> ReadExactlyAsync(NetworkStream stream, int length, CancellationToken token)
@@ -666,6 +655,83 @@ internal sealed class StreamHello
     public int Fps { get; set; }
     public string Orientation { get; set; } = "";
     public string Framing { get; set; } = "";
+}
+
+internal sealed class LiveFrameMailbox
+{
+    private readonly object _gate = new();
+    private readonly SemaphoreSlim _signal = new(0, 1);
+    private VideoFrame? _latest;
+    private bool _completed;
+
+    public bool Publish(VideoFrame frame)
+    {
+        var dropped = false;
+        var shouldSignal = false;
+
+        lock (_gate)
+        {
+            if (_completed)
+            {
+                return false;
+            }
+
+            dropped = _latest.HasValue;
+            shouldSignal = !_latest.HasValue;
+            _latest = frame;
+        }
+
+        if (shouldSignal)
+        {
+            _signal.Release();
+        }
+
+        return dropped;
+    }
+
+    public void Complete()
+    {
+        var shouldSignal = false;
+
+        lock (_gate)
+        {
+            if (_completed)
+            {
+                return;
+            }
+
+            _completed = true;
+            shouldSignal = !_latest.HasValue;
+        }
+
+        if (shouldSignal)
+        {
+            _signal.Release();
+        }
+    }
+
+    public async ValueTask<VideoFrame?> ReadAsync(CancellationToken token)
+    {
+        while (true)
+        {
+            await _signal.WaitAsync(token);
+
+            lock (_gate)
+            {
+                if (_latest.HasValue)
+                {
+                    var frame = _latest.Value;
+                    _latest = null;
+                    return frame;
+                }
+
+                if (_completed)
+                {
+                    return null;
+                }
+            }
+        }
+    }
 }
 
 internal readonly record struct VideoFrame(byte[] Data, TimeSpan CapturedAt);

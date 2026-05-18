@@ -18,7 +18,7 @@ final class StreamServer {
 
     private let queue = DispatchQueue(label: "windowsCam.stream.server")
     private var listener: NWListener?
-    private var connections: [NWConnection] = []
+    private var clients: [StreamClient] = []
     private var latestHello = StreamHello(
         version: 1,
         codec: "h264-annexb",
@@ -71,8 +71,8 @@ final class StreamServer {
         queue.async {
             self.listener?.cancel()
             self.listener = nil
-            self.connections.forEach { $0.cancel() }
-            self.connections.removeAll()
+            self.clients.forEach { $0.connection.cancel() }
+            self.clients.removeAll()
         }
     }
 
@@ -92,45 +92,95 @@ final class StreamServer {
 
     func broadcast(_ frame: Data) {
         queue.async {
-            guard !self.connections.isEmpty else { return }
+            guard !self.clients.isEmpty else { return }
             let packet = Self.packet(frame)
-            self.connections.forEach { connection in
-                connection.send(content: packet, completion: .contentProcessed { _ in })
+            let isKeyFrame = Self.isH264KeyFrame(frame)
+
+            self.clients.forEach { client in
+                self.queuePacket(
+                    StreamPacket(data: packet, isDroppable: true, isKeyFrame: isKeyFrame),
+                    to: client
+                )
             }
         }
     }
 
     private func accept(_ connection: NWConnection) {
-        connections.append(connection)
+        let client = StreamClient(connection: connection)
+        clients.append(client)
 
-        connection.stateUpdateHandler = { [weak self, weak connection] state in
-            guard let self, let connection else { return }
+        connection.stateUpdateHandler = { [weak self, weak client] state in
+            guard let self, let client else { return }
 
             if case .ready = state {
-                self.sendHello(on: connection)
-                self.emit("\(self.connections.count) OBS client(s)")
+                self.sendHello(to: client)
+                self.emit("\(self.clients.count) OBS client(s)")
             }
 
             if case .failed = state {
-                self.remove(connection)
+                self.remove(client)
             }
 
             if case .cancelled = state {
-                self.remove(connection)
+                self.remove(client)
             }
         }
 
         connection.start(queue: queue)
     }
 
-    private func sendHello(on connection: NWConnection) {
+    private func sendHello(to client: StreamClient) {
         guard let data = try? JSONEncoder().encode(latestHello) else { return }
-        connection.send(content: Self.packet(data), completion: .contentProcessed { _ in })
+        queuePacket(
+            StreamPacket(data: Self.packet(data), isDroppable: false, isKeyFrame: true),
+            to: client
+        )
     }
 
-    private func remove(_ connection: NWConnection) {
-        connections.removeAll { $0 === connection }
-        emit(connections.isEmpty ? "USB port \(Self.port)" : "\(connections.count) OBS client(s)")
+    private func queuePacket(_ packet: StreamPacket, to client: StreamClient) {
+        if packet.isDroppable, client.needsKeyFrame {
+            guard packet.isKeyFrame else { return }
+            client.needsKeyFrame = false
+        }
+
+        if client.isSending {
+            if packet.isDroppable, client.pendingPacket?.isDroppable == true {
+                client.needsKeyFrame = true
+                guard packet.isKeyFrame else { return }
+                client.needsKeyFrame = false
+            }
+
+            client.pendingPacket = packet
+            return
+        }
+
+        sendNow(packet, to: client)
+    }
+
+    private func sendNow(_ packet: StreamPacket, to client: StreamClient) {
+        client.isSending = true
+        client.connection.send(content: packet.data, completion: .contentProcessed { [weak self, weak client] error in
+            guard let self, let client else { return }
+
+            self.queue.async {
+                if error != nil {
+                    self.remove(client)
+                    return
+                }
+
+                if let pendingPacket = client.pendingPacket {
+                    client.pendingPacket = nil
+                    self.sendNow(pendingPacket, to: client)
+                } else {
+                    client.isSending = false
+                }
+            }
+        })
+    }
+
+    private func remove(_ client: StreamClient) {
+        clients.removeAll { $0 === client }
+        emit(clients.isEmpty ? "USB port \(Self.port)" : "\(clients.count) OBS client(s)")
     }
 
     private func emit(_ status: String) {
@@ -145,4 +195,53 @@ final class StreamServer {
         packet.append(payload)
         return packet
     }
+
+    private static func isH264KeyFrame(_ frame: Data) -> Bool {
+        frame.withUnsafeBytes { rawBuffer in
+            let bytes = rawBuffer.bindMemory(to: UInt8.self)
+            var index = 0
+
+            while index + 3 < bytes.count {
+                let nalOffset: Int?
+                if bytes[index] == 0, bytes[index + 1] == 0, bytes[index + 2] == 1 {
+                    nalOffset = index + 3
+                } else if index + 4 < bytes.count,
+                          bytes[index] == 0,
+                          bytes[index + 1] == 0,
+                          bytes[index + 2] == 0,
+                          bytes[index + 3] == 1 {
+                    nalOffset = index + 4
+                } else {
+                    index += 1
+                    continue
+                }
+
+                guard let nalOffset, nalOffset < bytes.count else { return false }
+                if bytes[nalOffset] & 0x1F == 5 {
+                    return true
+                }
+
+                index = nalOffset + 1
+            }
+
+            return false
+        }
+    }
+}
+
+private final class StreamClient {
+    let connection: NWConnection
+    var isSending = false
+    var needsKeyFrame = false
+    var pendingPacket: StreamPacket?
+
+    init(connection: NWConnection) {
+        self.connection = connection
+    }
+}
+
+private struct StreamPacket {
+    let data: Data
+    let isDroppable: Bool
+    let isKeyFrame: Bool
 }

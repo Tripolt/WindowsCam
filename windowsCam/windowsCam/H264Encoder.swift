@@ -31,7 +31,7 @@ final class H264Encoder {
             }
 
             guard let session = self.session else { return }
-            let keyFrameInterval = max(Int64(self.fps), 1)
+            let keyFrameInterval = max(Int64(self.fps / 2), 1)
             let forceKeyFrame = self.frameCount % keyFrameInterval == 0
             let options = [kVTEncodeFrameOptionKey_ForceKeyFrame: forceKeyFrame] as CFDictionary
             VTCompressionSessionEncodeFrame(
@@ -87,7 +87,8 @@ final class H264Encoder {
         VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_ProfileLevel, value: kVTProfileLevel_H264_High_AutoLevel)
         VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse)
         VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_MaxFrameDelayCount, value: NSNumber(value: 0))
-        VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: NSNumber(value: fps))
+        VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: NSNumber(value: max(fps / 2, 1)))
+        VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, value: NSNumber(value: 0.5))
         VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: NSNumber(value: fps))
         VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_AverageBitRate, value: NSNumber(value: bitrate(forWidth: width, height: height)))
         VTCompressionSessionPrepareToEncodeFrames(newSession)

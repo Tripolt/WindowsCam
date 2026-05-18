@@ -19,6 +19,8 @@
 udp://127.0.0.1:48651
 ```
 
+For lowest latency, use OBS's Media Source, not Browser Source, and set Network Buffering to `0 ms` if the option is available.
+
 ## Low-latency OBS settings
 
 In the OBS Media Source settings:
