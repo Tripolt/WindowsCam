@@ -1,0 +1,79 @@
+{
+  "" : {
+    "diagnostics" : "/Users/matteotripolt/Documents/privat/WindowsSync/DerivedData/Build/Intermediates.noindex/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/windowsCam-primary.dia",
+    "emit-module-dependencies" : "/Users/matteotripolt/Documents/privat/WindowsSync/DerivedData/Build/Intermediates.noindex/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/windowsCam-primary-emit-module.d",
+    "emit-module-diagnostics" : "/Users/matteotripolt/Documents/privat/WindowsSync/DerivedData/Build/Intermediates.noindex/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/windowsCam-primary-emit-module.dia",
+    "pch" : "/Users/matteotripolt/Documents/privat/WindowsSync/DerivedData/Build/Intermediates.noindex/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/windowsCam-primary-Bridging-header.pch",
+    "swift-dependencies" : "/Users/matteotripolt/Documents/privat/WindowsSync/DerivedData/Build/Intermediates.noindex/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/windowsCam-primary.swiftdeps"
+  },
+  "/Users/matteotripolt/Documents/privat/WindowsSync/DerivedData/Build/Intermediates.noindex/windowsCam.build/Debug-iphoneos/windowsCam.build/DerivedSources/GeneratedAssetSymbols.swift" : {
+    "const-values" : "/Users/matteotripolt/Documents/privat/WindowsSync/DerivedData/Build/Intermediates.noindex/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/GeneratedAssetSymbols.swiftconstvalues",
+    "dependencies" : "/Users/matteotripolt/Documents/privat/WindowsSync/DerivedData/Build/Intermediates.noindex/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/GeneratedAssetSymbols.d",
+    "diagnostics" : "/Users/matteotripolt/Documents/privat/WindowsSync/DerivedData/Build/Intermediates.noindex/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/GeneratedAssetSymbols.dia",
+    "index-unit-output-path" : "/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/GeneratedAssetSymbols.o",
+    "llvm-bc" : "/Users/matteotripolt/Documents/privat/WindowsSync/DerivedData/Build/Intermediates.noindex/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/GeneratedAssetSymbols.bc",
+    "object" : "/Users/matteotripolt/Documents/privat/WindowsSync/DerivedData/Build/Intermediates.noindex/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/GeneratedAssetSymbols.o",
+    "swift-dependencies" : "/Users/matteotripolt/Documents/privat/WindowsSync/DerivedData/Build/Intermediates.noindex/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/GeneratedAssetSymbols.swiftdeps",
+    "swiftmodule" : "/Users/matteotripolt/Documents/privat/WindowsSync/DerivedData/Build/Intermediates.noindex/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/GeneratedAssetSymbols~partial.swiftmodule"
+  },
+  "/Users/matteotripolt/Documents/privat/WindowsSync/windowsCam/windowsCam/CameraPipeline.swift" : {
+    "const-values" : "/Users/matteotripolt/Documents/privat/WindowsSync/DerivedData/Build/Intermediates.noindex/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/CameraPipeline.swiftconstvalues",
+    "dependencies" : "/Users/matteotripolt/Documents/privat/WindowsSync/DerivedData/Build/Intermediates.noindex/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/CameraPipeline.d",
+    "diagnostics" : "/Users/matteotripolt/Documents/privat/WindowsSync/DerivedData/Build/Intermediates.noindex/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/CameraPipeline.dia",
+    "index-unit-output-path" : "/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/CameraPipeline.o",
+    "llvm-bc" : "/Users/matteotripolt/Documents/privat/WindowsSync/DerivedData/Build/Intermediates.noindex/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/CameraPipeline.bc",
+    "object" : "/Users/matteotripolt/Documents/privat/WindowsSync/DerivedData/Build/Intermediates.noindex/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/CameraPipeline.o",
+    "swift-dependencies" : "/Users/matteotripolt/Documents/privat/WindowsSync/DerivedData/Build/Intermediates.noindex/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/CameraPipeline.swiftdeps",
+    "swiftmodule" : "/Users/matteotripolt/Documents/privat/WindowsSync/DerivedData/Build/Intermediates.noindex/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/CameraPipeline~partial.swiftmodule"
+  },
+  "/Users/matteotripolt/Documents/privat/WindowsSync/windowsCam/windowsCam/CameraPreviewView.swift" : {
+    "const-values" : "/Users/matteotripolt/Documents/privat/WindowsSync/DerivedData/Build/Intermediates.noindex/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/CameraPreviewView.swiftconstvalues",
+    "dependencies" : "/Users/matteotripolt/Documents/privat/WindowsSync/DerivedData/Build/Intermediates.noindex/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/CameraPreviewView.d",
+    "diagnostics" : "/Users/matteotripolt/Documents/privat/WindowsSync/DerivedData/Build/Intermediates.noindex/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/CameraPreviewView.dia",
+    "index-unit-output-path" : "/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/CameraPreviewView.o",
+    "llvm-bc" : "/Users/matteotripolt/Documents/privat/WindowsSync/DerivedData/Build/Intermediates.noindex/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/CameraPreviewView.bc",
+    "object" : "/Users/matteotripolt/Documents/privat/WindowsSync/DerivedData/Build/Intermediates.noindex/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/CameraPreviewView.o",
+    "swift-dependencies" : "/Users/matteotripolt/Documents/privat/WindowsSync/DerivedData/Build/Intermediates.noindex/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/CameraPreviewView.swiftdeps",
+    "swiftmodule" : "/Users/matteotripolt/Documents/privat/WindowsSync/DerivedData/Build/Intermediates.noindex/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/CameraPreviewView~partial.swiftmodule"
+  },
+  "/Users/matteotripolt/Documents/privat/WindowsSync/windowsCam/windowsCam/ContentView.swift" : {
+    "const-values" : "/Users/matteotripolt/Documents/privat/WindowsSync/DerivedData/Build/Intermediates.noindex/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/ContentView.swiftconstvalues",
+    "dependencies" : "/Users/matteotripolt/Documents/privat/WindowsSync/DerivedData/Build/Intermediates.noindex/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/ContentView.d",
+    "diagnostics" : "/Users/matteotripolt/Documents/privat/WindowsSync/DerivedData/Build/Intermediates.noindex/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/ContentView.dia",
+    "index-unit-output-path" : "/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/ContentView.o",
+    "llvm-bc" : "/Users/matteotripolt/Documents/privat/WindowsSync/DerivedData/Build/Intermediates.noindex/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/ContentView.bc",
+    "object" : "/Users/matteotripolt/Documents/privat/WindowsSync/DerivedData/Build/Intermediates.noindex/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/ContentView.o",
+    "swift-dependencies" : "/Users/matteotripolt/Documents/privat/WindowsSync/DerivedData/Build/Intermediates.noindex/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/ContentView.swiftdeps",
+    "swiftmodule" : "/Users/matteotripolt/Documents/privat/WindowsSync/DerivedData/Build/Intermediates.noindex/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/ContentView~partial.swiftmodule"
+  },
+  "/Users/matteotripolt/Documents/privat/WindowsSync/windowsCam/windowsCam/H264Encoder.swift" : {
+    "const-values" : "/Users/matteotripolt/Documents/privat/WindowsSync/DerivedData/Build/Intermediates.noindex/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/H264Encoder.swiftconstvalues",
+    "dependencies" : "/Users/matteotripolt/Documents/privat/WindowsSync/DerivedData/Build/Intermediates.noindex/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/H264Encoder.d",
+    "diagnostics" : "/Users/matteotripolt/Documents/privat/WindowsSync/DerivedData/Build/Intermediates.noindex/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/H264Encoder.dia",
+    "index-unit-output-path" : "/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/H264Encoder.o",
+    "llvm-bc" : "/Users/matteotripolt/Documents/privat/WindowsSync/DerivedData/Build/Intermediates.noindex/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/H264Encoder.bc",
+    "object" : "/Users/matteotripolt/Documents/privat/WindowsSync/DerivedData/Build/Intermediates.noindex/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/H264Encoder.o",
+    "swift-dependencies" : "/Users/matteotripolt/Documents/privat/WindowsSync/DerivedData/Build/Intermediates.noindex/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/H264Encoder.swiftdeps",
+    "swiftmodule" : "/Users/matteotripolt/Documents/privat/WindowsSync/DerivedData/Build/Intermediates.noindex/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/H264Encoder~partial.swiftmodule"
+  },
+  "/Users/matteotripolt/Documents/privat/WindowsSync/windowsCam/windowsCam/StreamServer.swift" : {
+    "const-values" : "/Users/matteotripolt/Documents/privat/WindowsSync/DerivedData/Build/Intermediates.noindex/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/StreamServer.swiftconstvalues",
+    "dependencies" : "/Users/matteotripolt/Documents/privat/WindowsSync/DerivedData/Build/Intermediates.noindex/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/StreamServer.d",
+    "diagnostics" : "/Users/matteotripolt/Documents/privat/WindowsSync/DerivedData/Build/Intermediates.noindex/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/StreamServer.dia",
+    "index-unit-output-path" : "/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/StreamServer.o",
+    "llvm-bc" : "/Users/matteotripolt/Documents/privat/WindowsSync/DerivedData/Build/Intermediates.noindex/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/StreamServer.bc",
+    "object" : "/Users/matteotripolt/Documents/privat/WindowsSync/DerivedData/Build/Intermediates.noindex/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/StreamServer.o",
+    "swift-dependencies" : "/Users/matteotripolt/Documents/privat/WindowsSync/DerivedData/Build/Intermediates.noindex/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/StreamServer.swiftdeps",
+    "swiftmodule" : "/Users/matteotripolt/Documents/privat/WindowsSync/DerivedData/Build/Intermediates.noindex/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/StreamServer~partial.swiftmodule"
+  },
+  "/Users/matteotripolt/Documents/privat/WindowsSync/windowsCam/windowsCam/windowsCamApp.swift" : {
+    "const-values" : "/Users/matteotripolt/Documents/privat/WindowsSync/DerivedData/Build/Intermediates.noindex/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/windowsCamApp.swiftconstvalues",
+    "dependencies" : "/Users/matteotripolt/Documents/privat/WindowsSync/DerivedData/Build/Intermediates.noindex/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/windowsCamApp.d",
+    "diagnostics" : "/Users/matteotripolt/Documents/privat/WindowsSync/DerivedData/Build/Intermediates.noindex/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/windowsCamApp.dia",
+    "index-unit-output-path" : "/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/windowsCamApp.o",
+    "llvm-bc" : "/Users/matteotripolt/Documents/privat/WindowsSync/DerivedData/Build/Intermediates.noindex/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/windowsCamApp.bc",
+    "object" : "/Users/matteotripolt/Documents/privat/WindowsSync/DerivedData/Build/Intermediates.noindex/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/windowsCamApp.o",
+    "swift-dependencies" : "/Users/matteotripolt/Documents/privat/WindowsSync/DerivedData/Build/Intermediates.noindex/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/windowsCamApp.swiftdeps",
+    "swiftmodule" : "/Users/matteotripolt/Documents/privat/WindowsSync/DerivedData/Build/Intermediates.noindex/windowsCam.build/Debug-iphoneos/windowsCam.build/Objects-normal/arm64/windowsCamApp~partial.swiftmodule"
+  }
+}

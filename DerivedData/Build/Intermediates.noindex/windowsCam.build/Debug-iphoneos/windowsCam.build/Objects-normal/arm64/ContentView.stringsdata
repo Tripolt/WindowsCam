@@ -1,0 +1,24 @@
+{
+  "source": "/Users/matteotripolt/Documents/privat/WindowsSync/windowsCam/windowsCam/ContentView.swift",
+  "tables": {
+    "Localizable": [
+      {
+        "comment": "",
+        "key": "Start",
+        "location": {
+          "startingColumn": 31,
+          "startingLine": 23
+        }
+      },
+      {
+        "comment": "",
+        "key": "Stop",
+        "location": {
+          "startingColumn": 31,
+          "startingLine": 31
+        }
+      }
+    ]
+  },
+  "version": 1
+}
