@@ -19,6 +19,18 @@
 udp://127.0.0.1:48651
 ```
 
+## Low-latency OBS settings
+
+In the OBS Media Source settings:
+
+- Disable `Local File`.
+- Set `Input` to `udp://127.0.0.1:48651`.
+- Set `Input Format` to `mpegts` if your OBS version shows that field.
+- Set `Network Buffering` / `Netzwerkpufferung` to `0 MB`.
+- Keep `Restart playback when source becomes active` enabled.
+
+The receiver is tuned for live output and will drop stale frames instead of letting delay grow. If the log reports dropped frames or ffmpeg falling behind, the stream should recover on the next keyframe.
+
 ## iPhone Trust
 
 If the receiver cannot find the iPhone, unlock the iPhone, unplug and reconnect the cable, then accept the Trust This Computer prompt.

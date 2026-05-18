@@ -13,6 +13,12 @@ final class H264Encoder {
     private var frameCount: Int64 = 0
     private var fps: Int32 = 30
 
+    func updateFps(_ newFps: Int32) {
+        queue.async {
+            self.fps = newFps
+        }
+    }
+
     func encode(_ sampleBuffer: CMSampleBuffer) {
         guard let imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         let imageWidth = Int32(CVPixelBufferGetWidth(imageBuffer))
@@ -25,7 +31,8 @@ final class H264Encoder {
             }
 
             guard let session = self.session else { return }
-            let forceKeyFrame = self.frameCount % Int64(self.fps * 2) == 0
+            let keyFrameInterval = max(Int64(self.fps), 1)
+            let forceKeyFrame = self.frameCount % keyFrameInterval == 0
             let options = [kVTEncodeFrameOptionKey_ForceKeyFrame: forceKeyFrame] as CFDictionary
             VTCompressionSessionEncodeFrame(
                 session,
@@ -79,7 +86,8 @@ final class H264Encoder {
         VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue)
         VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_ProfileLevel, value: kVTProfileLevel_H264_High_AutoLevel)
         VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse)
-        VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: NSNumber(value: fps * 2))
+        VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_MaxFrameDelayCount, value: NSNumber(value: 0))
+        VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: NSNumber(value: fps))
         VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: NSNumber(value: fps))
         VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_AverageBitRate, value: NSNumber(value: bitrate(forWidth: width, height: height)))
         VTCompressionSessionPrepareToEncodeFrames(newSession)

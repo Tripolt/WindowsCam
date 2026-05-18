@@ -3,10 +3,64 @@ import Combine
 import Foundation
 import UIKit
 
+// MARK: - Output Configuration
+
+enum OutputResolution: String, CaseIterable, Identifiable {
+    case uhd4K   = "4K"
+    case fhd1080 = "1080p"
+    case hd720   = "720p"
+
+    var id: String { rawValue }
+
+    var sessionPreset: AVCaptureSession.Preset {
+        switch self {
+        case .uhd4K:   return .hd4K3840x2160
+        case .fhd1080: return .hd1920x1080
+        case .hd720:   return .hd1280x720
+        }
+    }
+
+    var label: String { rawValue }
+
+    var nominalWidth: Int {
+        switch self {
+        case .uhd4K:   return 3840
+        case .fhd1080: return 1920
+        case .hd720:   return 1280
+        }
+    }
+
+    var nominalHeight: Int {
+        switch self {
+        case .uhd4K:   return 2160
+        case .fhd1080: return 1080
+        case .hd720:   return 720
+        }
+    }
+}
+
+enum OutputFrameRate: Int, CaseIterable, Identifiable {
+    case fps60 = 60
+    case fps30 = 30
+    case fps24 = 24
+
+    var id: Int { rawValue }
+
+    var label: String { "\(rawValue) fps" }
+
+    var frameDuration: CMTime {
+        CMTime(value: 1, timescale: CMTimeScale(rawValue))
+    }
+}
+
+// MARK: - Camera Pipeline
+
 final class CameraPipeline: NSObject, ObservableObject {
     @Published private(set) var isRunning = false
     @Published private(set) var captureStatus = "Camera idle"
     @Published private(set) var streamStatus = "Stream idle"
+    @Published var selectedResolution: OutputResolution = .uhd4K
+    @Published var selectedFrameRate: OutputFrameRate = .fps30
 
     let session = AVCaptureSession()
 
@@ -15,6 +69,8 @@ final class CameraPipeline: NSObject, ObservableObject {
     private let encoder = H264Encoder()
     private let streamServer = StreamServer()
     private var configured = false
+    private var currentDevice: AVCaptureDevice?
+    private var cancellables = Set<AnyCancellable>()
 
     override init() {
         super.init()
@@ -26,13 +82,24 @@ final class CameraPipeline: NSObject, ObservableObject {
         encoder.onFormatChange = { [weak self] width, height, fps in
             self?.streamServer.updateHello(width: width, height: height, fps: fps)
             DispatchQueue.main.async {
-                self?.captureStatus = "\(width)x\(height) \(fps)fps"
+                self?.captureStatus = "\(width)×\(height) \(fps)fps"
             }
         }
 
         streamServer.onStatusChange = { [weak self] status in
             self?.streamStatus = status
         }
+
+        // React to setting changes while running
+        $selectedResolution
+            .dropFirst()
+            .sink { [weak self] _ in self?.reconfigure() }
+            .store(in: &cancellables)
+
+        $selectedFrameRate
+            .dropFirst()
+            .sink { [weak self] _ in self?.reconfigure() }
+            .store(in: &cancellables)
     }
 
     func requestAccessAndStart() async {
@@ -92,14 +159,47 @@ final class CameraPipeline: NSObject, ObservableObject {
         }
     }
 
+    /// Reconfigure the session on-the-fly when resolution or frame rate changes.
+    private func reconfigure() {
+        sessionQueue.async {
+            guard self.configured else { return }
+
+            self.session.beginConfiguration()
+
+            // Update preset
+            let preset = self.selectedResolution.sessionPreset
+            if self.session.canSetSessionPreset(preset) {
+                self.session.sessionPreset = preset
+            }
+
+            // Update frame rate
+            if let device = self.currentDevice {
+                try? self.configureFrameRate(on: device)
+            }
+
+            self.session.commitConfiguration()
+
+            // Re-create encoder for new dimensions
+            self.encoder.invalidate()
+            self.encoder.updateFps(Int32(self.selectedFrameRate.rawValue))
+
+            DispatchQueue.main.async {
+                let res = self.selectedResolution
+                let fps = self.selectedFrameRate
+                self.captureStatus = "\(res.nominalWidth)×\(res.nominalHeight) \(fps.rawValue)fps"
+            }
+        }
+    }
+
     private func configureIfNeeded() throws {
         guard !configured else { return }
 
         session.beginConfiguration()
         defer { session.commitConfiguration() }
 
-        if session.canSetSessionPreset(.hd4K3840x2160) {
-            session.sessionPreset = .hd4K3840x2160
+        let preset = selectedResolution.sessionPreset
+        if session.canSetSessionPreset(preset) {
+            session.sessionPreset = preset
         } else if session.canSetSessionPreset(.hd1920x1080) {
             session.sessionPreset = .hd1920x1080
         } else {
@@ -111,6 +211,8 @@ final class CameraPipeline: NSObject, ObservableObject {
             AVCaptureDevice.default(.builtInTripleCamera, for: .video, position: .back) else {
             throw CameraPipelineError.noCamera
         }
+
+        currentDevice = device
 
         try configureAutomaticCameraFeatures(on: device)
         try configureFrameRate(on: device)
@@ -138,6 +240,7 @@ final class CameraPipeline: NSObject, ObservableObject {
             }
         }
 
+        encoder.updateFps(Int32(selectedFrameRate.rawValue))
         configured = true
     }
 
@@ -163,7 +266,7 @@ final class CameraPipeline: NSObject, ObservableObject {
         try device.lockForConfiguration()
         defer { device.unlockForConfiguration() }
 
-        let targetFrameDuration = CMTime(value: 1, timescale: 30)
+        let targetFrameDuration = selectedFrameRate.frameDuration
         device.activeVideoMinFrameDuration = targetFrameDuration
         device.activeVideoMaxFrameDuration = targetFrameDuration
     }

@@ -34,7 +34,10 @@ final class StreamServer {
             guard self.listener == nil else { return }
 
             do {
-                let parameters = NWParameters.tcp
+                let tcpOptions = NWProtocolTCP.Options()
+                tcpOptions.noDelay = true
+
+                let parameters = NWParameters(tls: nil, tcp: tcpOptions)
                 parameters.allowLocalEndpointReuse = true
                 let listener = try NWListener(using: parameters, on: NWEndpoint.Port(rawValue: Self.port)!)
                 self.listener = listener

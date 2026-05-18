@@ -44,6 +44,8 @@ udp://127.0.0.1:48651
 
 Then start OBS Virtual Camera if you want other Windows apps to see it.
 
+For lowest latency in OBS, disable `Local File`, set `Input Format` to `mpegts` if available, and set `Network Buffering` / `Netzwerkpufferung` to `0 MB`. The receiver is designed to drop stale frames instead of accumulating seconds of delay.
+
 ## Building the Windows installer
 
 Run this on Windows:

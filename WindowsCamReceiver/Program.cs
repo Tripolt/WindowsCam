@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
+using System.Threading.Channels;
 
 namespace WindowsCamReceiver;
 
@@ -40,6 +41,7 @@ internal sealed class MainForm : Form
     private Process? _iproxy;
     private Process? _ffmpeg;
     private Task? _receiveTask;
+    private long _droppedFrames;
 
     public MainForm()
     {
@@ -226,7 +228,9 @@ internal sealed class MainForm : Form
 
             SetStatus("Connecting to iPhone app");
             using var client = new TcpClient();
+            client.NoDelay = true;
             await client.ConnectAsync("127.0.0.1", LocalPort, token);
+            client.NoDelay = true;
             await using var stream = client.GetStream();
 
             var helloBytes = await ReadPacketAsync(stream, token);
@@ -239,9 +243,8 @@ internal sealed class MainForm : Form
                 InvokeUi(() => _streamLabel.Text = $"{hello.Codec} {hello.Width}x{hello.Height} {hello.Fps}fps");
             }
 
-            _ffmpeg = StartProcess(FindTool("ffmpeg")!,
-                $"-hide_banner -loglevel error -fflags nobuffer -flags low_delay -f h264 -i pipe:0 -an -c:v copy -f mpegts \"{ObsUrl}?pkt_size=1316\"",
-                "ffmpeg");
+            _droppedFrames = 0;
+            _ffmpeg = StartProcess(FindTool("ffmpeg")!, BuildFfmpegArguments(), "ffmpeg");
             await Task.Delay(500, token);
             ThrowIfExited(_ffmpeg, "ffmpeg", _ffmpegLog);
 
@@ -249,12 +252,7 @@ internal sealed class MainForm : Form
             Log($"Add an OBS Media Source with input: {ObsUrl}");
 
             var ffmpegInput = _ffmpeg.StandardInput.BaseStream;
-            while (!token.IsCancellationRequested)
-            {
-                var frame = await ReadPacketAsync(stream, token);
-                await ffmpegInput.WriteAsync(frame, token);
-                await ffmpegInput.FlushAsync(token);
-            }
+            await PumpLiveFramesAsync(stream, ffmpegInput, token);
         }
         catch (OperationCanceledException)
         {
@@ -330,6 +328,118 @@ internal sealed class MainForm : Form
         }
 
         return await ReadExactlyAsync(stream, checked((int)length), token);
+    }
+
+    private async Task PumpLiveFramesAsync(NetworkStream stream, Stream ffmpegInput, CancellationToken token)
+    {
+        using var pumpTokenSource = CancellationTokenSource.CreateLinkedTokenSource(token);
+        var pumpToken = pumpTokenSource.Token;
+        var frames = Channel.CreateBounded<VideoFrame>(new BoundedChannelOptions(1)
+        {
+            SingleReader = true,
+            SingleWriter = true,
+            FullMode = BoundedChannelFullMode.Wait
+        });
+
+        var stopwatch = Stopwatch.StartNew();
+        var reader = Task.Run(() => ReadFramesAsync(stream, frames, stopwatch, pumpToken), pumpToken);
+        var writer = Task.Run(() => WriteFramesAsync(frames.Reader, ffmpegInput, stopwatch, pumpToken), pumpToken);
+
+        try
+        {
+            await Task.WhenAny(reader, writer);
+            await pumpTokenSource.CancelAsync();
+            await Task.WhenAll(reader, writer);
+        }
+        catch
+        {
+            await pumpTokenSource.CancelAsync();
+            frames.Writer.TryComplete();
+            throw;
+        }
+    }
+
+    private async Task ReadFramesAsync(NetworkStream stream, Channel<VideoFrame> channel, Stopwatch stopwatch, CancellationToken token)
+    {
+        try
+        {
+            while (!token.IsCancellationRequested)
+            {
+                var frame = new VideoFrame(await ReadPacketAsync(stream, token), stopwatch.Elapsed);
+                if (channel.Writer.TryWrite(frame))
+                {
+                    continue;
+                }
+
+                if (channel.Reader.TryRead(out _))
+                {
+                    var dropped = Interlocked.Increment(ref _droppedFrames);
+                    if (dropped == 1 || dropped % 30 == 0)
+                    {
+                        Log($"Dropped {dropped} stale frame(s) to keep latency live.");
+                    }
+
+                    if (channel.Writer.TryWrite(frame))
+                    {
+                        continue;
+                    }
+                }
+
+                await channel.Writer.WriteAsync(frame, token);
+            }
+        }
+        finally
+        {
+            channel.Writer.TryComplete();
+        }
+    }
+
+    private async Task WriteFramesAsync(ChannelReader<VideoFrame> reader, Stream ffmpegInput, Stopwatch stopwatch, CancellationToken token)
+    {
+        var waitingForKeyFrame = false;
+        var lastDropCount = 0L;
+        var lastStallLog = TimeSpan.Zero;
+
+        await foreach (var frame in reader.ReadAllAsync(token))
+        {
+            var dropCount = Interlocked.Read(ref _droppedFrames);
+            if (dropCount != lastDropCount)
+            {
+                waitingForKeyFrame = true;
+                lastDropCount = dropCount;
+            }
+
+            if (waitingForKeyFrame)
+            {
+                if (!H264AnnexB.IsKeyFrame(frame.Data))
+                {
+                    continue;
+                }
+
+                waitingForKeyFrame = false;
+                Log("Recovered stream on next H.264 keyframe after dropping stale frames.");
+            }
+
+            var age = stopwatch.Elapsed - frame.CapturedAt;
+            if (age > TimeSpan.FromMilliseconds(250) && stopwatch.Elapsed - lastStallLog > TimeSpan.FromSeconds(2))
+            {
+                lastStallLog = stopwatch.Elapsed;
+                Log($"ffmpeg is {age.TotalMilliseconds:0}ms behind the live frame.");
+            }
+
+            await ffmpegInput.WriteAsync(frame.Data, token);
+            await ffmpegInput.FlushAsync(token);
+        }
+    }
+
+    private static string BuildFfmpegArguments()
+    {
+        return "-hide_banner -loglevel error " +
+            "-fflags nobuffer+genpts -flags low_delay -avioflags direct " +
+            "-probesize 32 -analyzeduration 0 -use_wallclock_as_timestamps 1 " +
+            "-f h264 -i pipe:0 -an -c:v copy " +
+            "-f mpegts -muxdelay 0 -muxpreload 0 -flush_packets 1 -max_delay 0 " +
+            $"\"{ObsUrl}?pkt_size=1316\"";
     }
 
     private static async Task<byte[]> ReadExactlyAsync(NetworkStream stream, int length, CancellationToken token)
@@ -556,6 +666,64 @@ internal sealed class StreamHello
     public int Fps { get; set; }
     public string Orientation { get; set; } = "";
     public string Framing { get; set; } = "";
+}
+
+internal readonly record struct VideoFrame(byte[] Data, TimeSpan CapturedAt);
+
+internal static class H264AnnexB
+{
+    public static bool IsKeyFrame(byte[] frame)
+    {
+        var data = frame.AsSpan();
+        var offset = 0;
+
+        while (TryFindStartCode(data, offset, out var startCodeOffset, out var nalOffset))
+        {
+            if (nalOffset >= data.Length)
+            {
+                return false;
+            }
+
+            var nalType = data[nalOffset] & 0x1F;
+            if (nalType == 5)
+            {
+                return true;
+            }
+
+            offset = Math.Max(nalOffset + 1, startCodeOffset + 3);
+        }
+
+        return false;
+    }
+
+    private static bool TryFindStartCode(ReadOnlySpan<byte> data, int offset, out int startCodeOffset, out int nalOffset)
+    {
+        for (var i = offset; i + 3 < data.Length; i++)
+        {
+            if (data[i] != 0 || data[i + 1] != 0)
+            {
+                continue;
+            }
+
+            if (data[i + 2] == 1)
+            {
+                startCodeOffset = i;
+                nalOffset = i + 3;
+                return true;
+            }
+
+            if (i + 4 < data.Length && data[i + 2] == 0 && data[i + 3] == 1)
+            {
+                startCodeOffset = i;
+                nalOffset = i + 4;
+                return true;
+            }
+        }
+
+        startCodeOffset = -1;
+        nalOffset = -1;
+        return false;
+    }
 }
 
 internal static class ControlExtensions
