@@ -95,7 +95,7 @@ final class H264Encoder {
             return
         }
 
-        let isKeyFrame = attachments.first?[kCMSampleAttachmentKey_NotSync] == nil
+        let isKeyFrame = !Self.attachmentIsTrue(attachments.first?[kCMSampleAttachmentKey_NotSync])
         var frame = Data()
 
         if isKeyFrame {
@@ -160,6 +160,20 @@ final class H264Encoder {
 
     private func bitrate(forWidth width: Int32, height: Int32) -> Int {
         width >= 3840 || height >= 2160 ? 24_000_000 : 12_000_000
+    }
+
+    private static func attachmentIsTrue(_ value: Any?) -> Bool {
+        guard let value else { return false }
+
+        if let bool = value as? Bool {
+            return bool
+        }
+
+        if CFGetTypeID(value as CFTypeRef) == CFBooleanGetTypeID() {
+            return CFBooleanGetValue(value as! CFBoolean)
+        }
+
+        return false
     }
 
     private static let startCode = Data([0, 0, 0, 1])

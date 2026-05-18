@@ -1,0 +1,22 @@
+# .NET build output
+WindowsCamReceiver/bin/
+WindowsCamReceiver/obj/
+
+# Installer and packaging output
+packaging/dist/
+
+# Locally bundled third-party tools
+WindowsCamReceiver/Tools/*.exe
+WindowsCamReceiver/Tools/*.dll
+WindowsCamReceiver/Tools/*.zip
+WindowsCamReceiver/Tools/*.tar.xz
+!WindowsCamReceiver/Tools/README.md
+
+# Xcode local state and build output
+DerivedData/
+*.xcuserstate
+xcuserdata/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db

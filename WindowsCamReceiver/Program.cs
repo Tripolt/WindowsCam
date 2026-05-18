@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Net.Sockets;
+using System.Text;
 using System.Text.Json;
 
 namespace WindowsCamReceiver;
@@ -20,7 +21,7 @@ internal sealed class MainForm : Form
     private const int DevicePort = 48650;
     private const int LocalPort = 48650;
     private const int ObsPort = 48651;
-    private const string ObsUrl = $"udp://127.0.0.1:{ObsPort}";
+    private const string ObsUrl = "udp://127.0.0.1:48651";
 
     private readonly Label _statusLabel = new();
     private readonly Label _deviceLabel = new();
@@ -33,6 +34,8 @@ internal sealed class MainForm : Form
     private readonly TextBox _logBox = new();
 
     private readonly CancellationTokenSource _closing = new();
+    private readonly StringBuilder _iproxyLog = new();
+    private readonly StringBuilder _ffmpegLog = new();
     private CancellationTokenSource? _runToken;
     private Process? _iproxy;
     private Process? _ffmpeg;
@@ -217,12 +220,9 @@ internal sealed class MainForm : Form
             var device = await DetectDeviceAsync(token);
             InvokeUi(() => _deviceLabel.Text = device);
 
-            _iproxy = StartProcess(FindTool("iproxy")!, $"{LocalPort} {DevicePort}", "iproxy");
+            _iproxy = StartProcess(FindTool("iproxy")!, $"{LocalPort}:{DevicePort}", "iproxy");
             await Task.Delay(1000, token);
-
-            _ffmpeg = StartProcess(FindTool("ffmpeg")!,
-                $"-hide_banner -loglevel warning -fflags nobuffer -flags low_delay -f h264 -i pipe:0 -an -c:v copy -f mpegts \"{ObsUrl}?pkt_size=1316\"",
-                "ffmpeg");
+            ThrowIfExited(_iproxy, "iproxy", _iproxyLog);
 
             SetStatus("Connecting to iPhone app");
             using var client = new TcpClient();
@@ -239,6 +239,12 @@ internal sealed class MainForm : Form
                 InvokeUi(() => _streamLabel.Text = $"{hello.Codec} {hello.Width}x{hello.Height} {hello.Fps}fps");
             }
 
+            _ffmpeg = StartProcess(FindTool("ffmpeg")!,
+                $"-hide_banner -loglevel error -fflags nobuffer -flags low_delay -f h264 -i pipe:0 -an -c:v copy -f mpegts \"{ObsUrl}?pkt_size=1316\"",
+                "ffmpeg");
+            await Task.Delay(500, token);
+            ThrowIfExited(_ffmpeg, "ffmpeg", _ffmpegLog);
+
             SetStatus("Streaming to OBS");
             Log($"Add an OBS Media Source with input: {ObsUrl}");
 
@@ -253,6 +259,13 @@ internal sealed class MainForm : Form
         catch (OperationCanceledException)
         {
             Log("Receiver stopped.");
+        }
+        catch (EndOfStreamException)
+        {
+            SetStatus("Error");
+            Log("The USB proxy connected, but the iPhone closed the stream before sending metadata.");
+            Log("On the iPhone, the app should show USB port 48650 before you press Start here, then OBS client(s) after connecting.");
+            Log("If idevice_id.exe still cannot list devices, install Apple Devices or iTunes from Apple so Windows has Apple Mobile Device support.");
         }
         catch (Exception ex)
         {
@@ -277,11 +290,23 @@ internal sealed class MainForm : Form
             return "Unknown iPhone";
         }
 
-        var udids = await CaptureProcessAsync(ideviceId, "-l", token);
+        string udids;
+        try
+        {
+            udids = await CaptureProcessAsync(ideviceId, "-l", token);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            Log($"idevice_id.exe could not list devices: {ex.Message}");
+            Log("Continuing with iproxy. If connection still fails, install Apple Devices or iTunes so Windows has Apple's USB driver.");
+            return "Unknown iPhone";
+        }
+
         var udid = udids.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
         if (string.IsNullOrWhiteSpace(udid))
         {
-            throw new InvalidOperationException("No trusted iPhone found over USB.");
+            Log("idevice_id.exe did not report a trusted iPhone. Continuing with iproxy.");
+            return "Unknown iPhone";
         }
 
         var ideviceName = FindTool("idevicename", required: false);
@@ -328,6 +353,12 @@ internal sealed class MainForm : Form
 
     private Process StartProcess(string fileName, string arguments, string label)
     {
+        var logBuffer = label == "iproxy" ? _iproxyLog : _ffmpegLog;
+        lock (logBuffer)
+        {
+            logBuffer.Clear();
+        }
+
         Log($"Starting {label}: {fileName} {arguments}");
         var process = new Process
         {
@@ -344,12 +375,50 @@ internal sealed class MainForm : Form
             EnableRaisingEvents = true
         };
 
-        process.OutputDataReceived += (_, e) => { if (!string.IsNullOrWhiteSpace(e.Data)) Log($"{label}: {e.Data}"); };
-        process.ErrorDataReceived += (_, e) => { if (!string.IsNullOrWhiteSpace(e.Data)) Log($"{label}: {e.Data}"); };
+        process.OutputDataReceived += (_, e) => AppendToolLog(logBuffer, label, e.Data);
+        process.ErrorDataReceived += (_, e) => AppendToolLog(logBuffer, label, e.Data);
+        process.Exited += (_, _) => Log($"{label} exited with code {process.ExitCode}.");
         process.Start();
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
         return process;
+    }
+
+    private void AppendToolLog(StringBuilder buffer, string label, string? data)
+    {
+        if (string.IsNullOrWhiteSpace(data))
+        {
+            return;
+        }
+
+        lock (buffer)
+        {
+            buffer.AppendLine(data);
+            if (buffer.Length > 6000)
+            {
+                buffer.Remove(0, buffer.Length - 6000);
+            }
+        }
+
+        Log($"{label}: {data}");
+    }
+
+    private static void ThrowIfExited(Process process, string label, StringBuilder logBuffer)
+    {
+        if (!process.HasExited)
+        {
+            return;
+        }
+
+        var details = "";
+        lock (logBuffer)
+        {
+            details = logBuffer.ToString().Trim();
+        }
+
+        throw new InvalidOperationException(details.Length == 0
+            ? $"{label} exited with code {process.ExitCode}."
+            : $"{label} exited with code {process.ExitCode}: {details}");
     }
 
     private async Task<string> CaptureProcessAsync(string fileName, string arguments, CancellationToken token)
