@@ -10,6 +10,8 @@ enum OutputResolution: String, CaseIterable, Identifiable {
     case fhd1080 = "1080p"
     case hd720   = "720p"
 
+    static let allCases: [OutputResolution] = [.hd720]
+
     var id: String { rawValue }
 
     var sessionPreset: AVCaptureSession.Preset {
@@ -59,14 +61,13 @@ final class CameraPipeline: NSObject, ObservableObject {
     @Published private(set) var isRunning = false
     @Published private(set) var captureStatus = "Camera idle"
     @Published private(set) var streamStatus = "PC disconnected"
-    @Published var selectedResolution: OutputResolution = .fhd1080
+    @Published var selectedResolution: OutputResolution = .hd720
     @Published var selectedFrameRate: OutputFrameRate = .fps30
 
     let session = AVCaptureSession()
 
     private let sessionQueue = DispatchQueue(label: "windowsCam.camera.session")
     private let videoQueue = DispatchQueue(label: "windowsCam.camera.video")
-    private let encoder = H264Encoder()
     private let streamServer = StreamServer()
     private var configured = false
     private var currentDevice: AVCaptureDevice?
@@ -74,17 +75,6 @@ final class CameraPipeline: NSObject, ObservableObject {
 
     override init() {
         super.init()
-
-        encoder.onEncodedFrame = { [weak self] frame in
-            self?.streamServer.broadcast(frame)
-        }
-
-        encoder.onFormatChange = { [weak self] width, height, fps in
-            self?.streamServer.updateHello(width: width, height: height, fps: fps)
-            DispatchQueue.main.async {
-                self?.captureStatus = "\(width)×\(height) \(fps)fps"
-            }
-        }
 
         streamServer.onStatusChange = { [weak self] status in
             self?.streamStatus = status
@@ -147,7 +137,6 @@ final class CameraPipeline: NSObject, ObservableObject {
         sessionQueue.async {
             guard self.session.isRunning else { return }
             self.session.stopRunning()
-            self.encoder.invalidate()
             self.streamServer.stop()
 
             DispatchQueue.main.async {
@@ -179,15 +168,15 @@ final class CameraPipeline: NSObject, ObservableObject {
 
             self.session.commitConfiguration()
 
-            // Re-create encoder for new dimensions
-            self.encoder.invalidate()
-            self.encoder.updateFps(Int32(self.selectedFrameRate.rawValue))
-
+            self.streamServer.updateHello(
+                width: self.selectedResolution.nominalWidth,
+                height: self.selectedResolution.nominalHeight,
+                fps: self.selectedFrameRate.rawValue
+            )
             DispatchQueue.main.async {
-                let res = self.selectedResolution
-                let fps = self.selectedFrameRate
-                self.captureStatus = "\(res.nominalWidth)×\(res.nominalHeight) \(fps.rawValue)fps"
+                self.captureStatus = "\(self.selectedResolution.nominalWidth)x\(self.selectedResolution.nominalHeight) \(self.selectedFrameRate.rawValue)fps"
             }
+
         }
     }
 
@@ -200,8 +189,8 @@ final class CameraPipeline: NSObject, ObservableObject {
         let preset = selectedResolution.sessionPreset
         if session.canSetSessionPreset(preset) {
             session.sessionPreset = preset
-        } else if session.canSetSessionPreset(.hd1920x1080) {
-            session.sessionPreset = .hd1920x1080
+        } else if session.canSetSessionPreset(.hd1280x720) {
+            session.sessionPreset = .hd1280x720
         } else {
             session.sessionPreset = .high
         }
@@ -232,15 +221,19 @@ final class CameraPipeline: NSObject, ObservableObject {
         session.addOutput(output)
 
         if let connection = output.connection(with: .video) {
-            if connection.isVideoRotationAngleSupported(90) {
-                connection.videoRotationAngle = 90
-            }
             if connection.isVideoStabilizationSupported {
-                connection.preferredVideoStabilizationMode = .auto
+                connection.preferredVideoStabilizationMode = .off
             }
         }
 
-        encoder.updateFps(Int32(selectedFrameRate.rawValue))
+        streamServer.updateHello(
+            width: selectedResolution.nominalWidth,
+            height: selectedResolution.nominalHeight,
+            fps: selectedFrameRate.rawValue
+        )
+        DispatchQueue.main.async {
+            self.captureStatus = "\(self.selectedResolution.nominalWidth)x\(self.selectedResolution.nominalHeight) \(self.selectedFrameRate.rawValue)fps"
+        }
         configured = true
     }
 
@@ -274,7 +267,52 @@ final class CameraPipeline: NSObject, ObservableObject {
 
 extension CameraPipeline: AVCaptureVideoDataOutputSampleBufferDelegate {
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-        encoder.encode(sampleBuffer)
+        guard let imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer),
+              let frame = Self.copyNV12Frame(from: imageBuffer) else {
+            return
+        }
+
+        streamServer.broadcast(frame)
+    }
+
+    private static func copyNV12Frame(from imageBuffer: CVPixelBuffer) -> Data? {
+        CVPixelBufferLockBaseAddress(imageBuffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(imageBuffer, .readOnly) }
+
+        guard CVPixelBufferGetPlaneCount(imageBuffer) == 2,
+              let yBase = CVPixelBufferGetBaseAddressOfPlane(imageBuffer, 0),
+              let uvBase = CVPixelBufferGetBaseAddressOfPlane(imageBuffer, 1) else {
+            return nil
+        }
+
+        let width = CVPixelBufferGetWidth(imageBuffer)
+        let height = CVPixelBufferGetHeight(imageBuffer)
+        let yStride = CVPixelBufferGetBytesPerRowOfPlane(imageBuffer, 0)
+        let uvStride = CVPixelBufferGetBytesPerRowOfPlane(imageBuffer, 1)
+        let yRows = CVPixelBufferGetHeightOfPlane(imageBuffer, 0)
+        let uvRows = CVPixelBufferGetHeightOfPlane(imageBuffer, 1)
+
+        guard yRows == height, uvRows == height / 2 else {
+            return nil
+        }
+
+        var frame = Data(count: width * height * 3 / 2)
+        frame.withUnsafeMutableBytes { output in
+            guard let destination = output.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return }
+            let ySource = yBase.assumingMemoryBound(to: UInt8.self)
+            let uvSource = uvBase.assumingMemoryBound(to: UInt8.self)
+
+            for row in 0..<height {
+                memcpy(destination + row * width, ySource + row * yStride, width)
+            }
+
+            let uvDestination = destination + width * height
+            for row in 0..<(height / 2) {
+                memcpy(uvDestination + row * width, uvSource + row * uvStride, width)
+            }
+        }
+
+        return frame
     }
 }
 

@@ -21,9 +21,9 @@ final class StreamServer {
     private var clients: [StreamClient] = []
     private var latestHello = StreamHello(
         version: 1,
-        codec: "h264-annexb",
-        width: 3840,
-        height: 2160,
+        codec: "nv12-raw",
+        width: 1280,
+        height: 720,
         fps: 30,
         orientation: "landscapeRight",
         framing: "uint32be-length-prefixed"
@@ -80,7 +80,7 @@ final class StreamServer {
         queue.async {
             self.latestHello = StreamHello(
                 version: 1,
-                codec: "h264-annexb",
+                codec: "nv12-raw",
                 width: width,
                 height: height,
                 fps: fps,
@@ -94,11 +94,9 @@ final class StreamServer {
         queue.async {
             guard !self.clients.isEmpty else { return }
             let packet = Self.packet(frame)
-            let isKeyFrame = Self.isH264KeyFrame(frame)
-
             self.clients.forEach { client in
                 self.queuePacket(
-                    StreamPacket(data: packet, isDroppable: true, isKeyFrame: isKeyFrame),
+                    StreamPacket(data: packet, isDroppable: true, isKeyFrame: true),
                     to: client
                 )
             }
@@ -196,37 +194,6 @@ final class StreamServer {
         return packet
     }
 
-    private static func isH264KeyFrame(_ frame: Data) -> Bool {
-        frame.withUnsafeBytes { rawBuffer in
-            let bytes = rawBuffer.bindMemory(to: UInt8.self)
-            var index = 0
-
-            while index + 3 < bytes.count {
-                let nalOffset: Int?
-                if bytes[index] == 0, bytes[index + 1] == 0, bytes[index + 2] == 1 {
-                    nalOffset = index + 3
-                } else if index + 4 < bytes.count,
-                          bytes[index] == 0,
-                          bytes[index + 1] == 0,
-                          bytes[index + 2] == 0,
-                          bytes[index + 3] == 1 {
-                    nalOffset = index + 4
-                } else {
-                    index += 1
-                    continue
-                }
-
-                guard let nalOffset, nalOffset < bytes.count else { return false }
-                if bytes[nalOffset] & 0x1F == 5 {
-                    return true
-                }
-
-                index = nalOffset + 1
-            }
-
-            return false
-        }
-    }
 }
 
 private final class StreamClient {

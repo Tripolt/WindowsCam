@@ -245,19 +245,29 @@ internal sealed class MainForm : Form
             broker.PublishPlaceholder();
             _droppedFrames = 0;
 
-            _ffmpeg = StartProcess(
-                FindTool("ffmpeg")!,
-                BuildFfmpegDecodeArguments(mode),
-                "ffmpeg",
-                redirectStandardInput: true,
-                redirectStandardOutput: true);
-
-            await Task.Delay(500, token);
-            ThrowIfExited(_ffmpeg, "ffmpeg", _ffmpegLog);
-
             SetStatus("Feeding WindowsCam");
             Log($"Select '{CameraName}' in Teams, Zoom, a browser, or OBS Video Capture Device.");
-            await PumpDecodedFramesAsync(stream, _ffmpeg, broker, mode, token);
+            if (string.Equals(hello.Codec, "nv12-raw", StringComparison.OrdinalIgnoreCase))
+            {
+                await PumpRawNv12FramesAsync(stream, broker, mode, token);
+            }
+            else if (string.Equals(hello.Codec, "h264-annexb", StringComparison.OrdinalIgnoreCase))
+            {
+                _ffmpeg = StartProcess(
+                    FindTool("ffmpeg")!,
+                    BuildFfmpegDecodeArguments(mode),
+                    "ffmpeg",
+                    redirectStandardInput: true,
+                    redirectStandardOutput: true);
+
+                await Task.Delay(500, token);
+                ThrowIfExited(_ffmpeg, "ffmpeg", _ffmpegLog);
+                await PumpDecodedFramesAsync(stream, _ffmpeg, broker, mode, token);
+            }
+            else
+            {
+                throw new InvalidDataException($"Unsupported iPhone stream codec: {hello.Codec}");
+            }
         }
         catch (OperationCanceledException)
         {
@@ -343,6 +353,29 @@ internal sealed class MainForm : Form
             await pumpTokenSource.CancelAsync();
             encodedFrames.Complete();
             throw;
+        }
+    }
+
+    private async Task PumpRawNv12FramesAsync(NetworkStream stream, LatestFrameBroker broker, CameraMode mode, CancellationToken token)
+    {
+        var frameCount = 0L;
+
+        while (!token.IsCancellationRequested)
+        {
+            var frame = await ReadPacketAsync(stream, token);
+            if (frame.Length != mode.Nv12FrameBytes)
+            {
+                Log($"Dropped malformed NV12 frame: expected {mode.Nv12FrameBytes} bytes but received {frame.Length}.");
+                continue;
+            }
+
+            broker.PublishFrame(frame);
+            frameCount++;
+
+            if (frameCount == 1 || frameCount % (mode.Fps * 10) == 0)
+            {
+                Log($"Published {frameCount} raw NV12 frame(s) to WindowsCam at {mode.Width}x{mode.Height}.");
+            }
         }
     }
 
@@ -800,6 +833,7 @@ internal sealed class LatestFrameBroker : IDisposable
         }
 
         var sequence = Interlocked.Increment(ref _sequence);
+        _accessor.Write(32, 0L);
         _accessor.WriteArray(HeaderBytes, nv12Frame, 0, nv12Frame.Length);
         _accessor.Write(0, Magic);
         _accessor.Write(8, Version);
@@ -810,7 +844,6 @@ internal sealed class LatestFrameBroker : IDisposable
         _accessor.Write(28, nv12Frame.Length);
         _accessor.Write(32, sequence);
         _accessor.Write(40, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
-        _accessor.Flush();
     }
 
     public void Dispose()

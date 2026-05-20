@@ -9,6 +9,7 @@ $ErrorActionPreference = "Stop"
 
 $RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $ProjectPath = Join-Path $RepoRoot "WindowsCamReceiver\WindowsCamReceiver.csproj"
+$VirtualCameraSourceProject = Join-Path $RepoRoot "WindowsCam.VirtualCamera.Source\MediaSource.vcxproj"
 $VirtualCameraToolProject = Join-Path $RepoRoot "WindowsCam.VirtualCamera.Tool\WindowsCam.VirtualCamera.Tool.vcxproj"
 $PublishDir = Join-Path $RepoRoot "packaging\dist\publish\$Runtime"
 $InstallerScript = Join-Path $RepoRoot "packaging\WindowsCamReceiver.iss"
@@ -40,6 +41,36 @@ function Copy-ToolFromPath {
     }
 }
 
+function Find-MSBuild {
+    $command = Get-Command "MSBuild.exe" -ErrorAction SilentlyContinue
+    if ($command) {
+        return $command.Source
+    }
+
+    $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+    if (Test-Path $vswhere) {
+        $path = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -find "MSBuild\Current\Bin\MSBuild.exe" | Select-Object -First 1
+        if ($path -and (Test-Path $path)) {
+            return $path
+        }
+    }
+
+    $candidates = @(
+        "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin\MSBuild.exe",
+        "${env:ProgramFiles}\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe",
+        "${env:ProgramFiles}\Microsoft Visual Studio\2022\Professional\MSBuild\Current\Bin\MSBuild.exe",
+        "${env:ProgramFiles}\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe"
+    )
+
+    foreach ($candidate in $candidates) {
+        if (Test-Path $candidate) {
+            return $candidate
+        }
+    }
+
+    return $null
+}
+
 Require-Command "dotnet" | Out-Null
 
 if (Test-Path $PublishDir) {
@@ -55,17 +86,44 @@ dotnet publish $ProjectPath `
     -p:PublishSingleFile=true `
     -p:IncludeNativeLibrariesForSelfExtract=true `
     --output $PublishDir
+if ($LASTEXITCODE -ne 0) {
+    throw "WindowsCamReceiver publish failed."
+}
 
-$msbuild = Get-Command "MSBuild.exe" -ErrorAction SilentlyContinue
+$msbuild = Find-MSBuild
 if ($msbuild -and (Test-Path $VirtualCameraToolProject)) {
-    & $msbuild.Source $VirtualCameraToolProject /p:Configuration=Release /p:Platform=x64 /m
+    if (-not (Test-Path $VirtualCameraSourceProject)) {
+        throw "Native virtual camera source project was not found at $VirtualCameraSourceProject."
+    }
+
+    & $msbuild $VirtualCameraSourceProject /p:Configuration=Release /p:Platform=x64 /m
+    if ($LASTEXITCODE -ne 0) {
+        throw "Native virtual camera source build failed."
+    }
+
+    $sourceOutput = Join-Path $RepoRoot "WindowsCam.VirtualCamera.Source\x64\Release\WindowsCam.VirtualCamera.Source.dll"
+    if (Test-Path $sourceOutput) {
+        Copy-Item -Force -Path $sourceOutput -Destination $PublishDir
+    }
+    else {
+        throw "Native virtual camera source output was not found at $sourceOutput."
+    }
+
+    & $msbuild $VirtualCameraToolProject /p:Configuration=Release /p:Platform=x64 /m
+    if ($LASTEXITCODE -ne 0) {
+        throw "Native virtual camera tool build failed."
+    }
+
     $toolOutput = Join-Path $RepoRoot "WindowsCam.VirtualCamera.Tool\x64\Release\WindowsCam.VirtualCamera.Tool.exe"
     if (Test-Path $toolOutput) {
         Copy-Item -Force -Path $toolOutput -Destination $PublishDir
     }
+    else {
+        throw "Native virtual camera tool output was not found at $toolOutput."
+    }
 }
 else {
-    Write-Host "MSBuild.exe was not found; native virtual camera tool was not built."
+    throw "MSBuild.exe was not found; native virtual camera tool was not built."
 }
 
 Copy-Item -Force -Path (Join-Path $RepoRoot "WindowsCamReceiver\WINDOWS_INSTALL.md") -Destination $PublishDir
