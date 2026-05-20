@@ -139,7 +139,6 @@ if (Test-Path $ToolsSource) {
 }
 
 if ($IncludeLocalTools) {
-    Copy-ToolFromPath "ffmpeg.exe"
     Copy-ToolFromPath "iproxy.exe"
     Copy-ToolFromPath "idevice_id.exe"
     Copy-ToolFromPath "idevicename.exe"

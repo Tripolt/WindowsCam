@@ -10,7 +10,7 @@ The registration tool passes this CLSID to `MFCreateVirtualCamera`. The matching
 
 ## Frame Broker Contract
 
-The receiver publishes the latest decoded frame to:
+The receiver publishes the latest raw NV12 frame to:
 
 ```text
 %ProgramData%\WindowsCam\latest-frame.mmf
@@ -31,13 +31,18 @@ The file is a memory-mapped frame buffer with a 64-byte little-endian header fol
 | 40 | Int64 | UTC timestamp in Unix milliseconds |
 | 48 | 16 bytes | Reserved |
 
-Supported modes for v1:
+Supported virtual camera modes:
 
+- `3840x2160 40fps` NV12
 - `3840x2160 30fps` NV12
+- `1920x1080 60fps` NV12
+- `1920x1080 40fps` NV12
 - `1920x1080 30fps` NV12
+- `1280x720 60fps` NV12
+- `1280x720 40fps` NV12
 - `1280x720 30fps` NV12
 
-The custom source should expose those three media types and, on each `IMFMediaStream::RequestSample`, copy the newest payload into an `IMFSample` allocated with Media Foundation buffer APIs. If no fresh iPhone frame is available, it should repeat the newest frame or emit a neutral placeholder so Teams, Zoom, browsers, and OBS keep the camera alive.
+The custom source exposes those media types and, on each `IMFMediaStream::RequestSample`, copies the newest payload into an `IMFSample` allocated with Media Foundation buffer APIs. If no fresh iPhone frame is available, it repeats the newest frame or emits a neutral placeholder so Teams, Zoom, browsers, and OBS keep the camera alive.
 
 ## Implementation Notes
 

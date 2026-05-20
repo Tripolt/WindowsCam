@@ -613,13 +613,13 @@ namespace winrt::WindowsSample::implementation
             const DWORD STREAM_ID = 0;
             RETURN_IF_FAILED(MFCreateSensorProfile(KSCAMERAPROFILE_Legacy, 0 /*ProfileIndex*/, nullptr,
                 &profile));
-            RETURN_IF_FAILED(profile->AddProfileFilter(STREAM_ID, L"((RES==;FRT<=30,1;SUT==))"));
+            RETURN_IF_FAILED(profile->AddProfileFilter(STREAM_ID, L"((RES==;FRT<=60,1;SUT==))"));
             RETURN_IF_FAILED(profileCollection->AddProfile(profile.get()));
 
-            // High Frame Rate profile will only allow >=60fps.
+            // High Frame Rate profile allows the raw low-latency modes above 30fps.
             RETURN_IF_FAILED(MFCreateSensorProfile(KSCAMERAPROFILE_HighFrameRate, 0 /*ProfileIndex*/, nullptr,
                 &profile));
-            RETURN_IF_FAILED(profile->AddProfileFilter(STREAM_ID, L"((RES==;FRT>=60,1;SUT==))"));
+            RETURN_IF_FAILED(profile->AddProfileFilter(STREAM_ID, L"((RES==;FRT>=40,1;SUT==))"));
             RETURN_IF_FAILED(profileCollection->AddProfile(profile.get()));
 
 

@@ -165,18 +165,18 @@ struct ContentView: View {
     private var mainActionButton: some View {
         Button {
             if camera.isRunning {
-                camera.stop()
+                showSettings = true
             } else {
                 camera.start()
             }
         } label: {
-            Image(systemName: camera.isRunning ? "stop.fill" : "play.fill")
+            Image(systemName: camera.isRunning ? "video.fill" : "play.fill")
                 .font(.title2)
                 .foregroundStyle(.white)
                 .frame(width: 64, height: 64)
         }
         .glassEffect(
-            .regular.interactive().tint(camera.isRunning ? .red : .green),
+            .regular.interactive().tint(.green),
             in: Circle()
         )
     }
@@ -231,6 +231,8 @@ struct ContentView: View {
                     HStack(spacing: 8) {
                         ForEach(OutputResolution.allCases) { res in
                             resolutionChip(res)
+                                .disabled(!camera.isResolutionAvailable(res))
+                                .opacity(camera.isResolutionAvailable(res) ? 1 : 0.35)
                         }
                     }
                 }
@@ -244,8 +246,34 @@ struct ContentView: View {
                     HStack(spacing: 8) {
                         ForEach(OutputFrameRate.allCases) { fps in
                             frameRateChip(fps)
+                                .disabled(!camera.isFrameRateAvailable(fps))
+                                .opacity(camera.isFrameRateAvailable(fps) ? 1 : 0.35)
                         }
                     }
+                }
+
+                HStack(spacing: 10) {
+                    Button {
+                        camera.restart()
+                    } label: {
+                        Label("Restart", systemImage: "arrow.clockwise")
+                            .font(.caption.weight(.bold))
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.vertical, 9)
+                    .glassEffect(.clear.interactive(), in: RoundedRectangle(cornerRadius: 10))
+
+                    Button {
+                        camera.stop()
+                    } label: {
+                        Label("Stop", systemImage: "stop.fill")
+                            .font(.caption.weight(.bold))
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.vertical, 9)
+                    .glassEffect(.clear.interactive().tint(.red), in: RoundedRectangle(cornerRadius: 10))
                 }
             }
             .padding(16)
@@ -286,6 +314,8 @@ struct ContentView: View {
                 VStack(spacing: 6) {
                     ForEach(OutputResolution.allCases) { res in
                         resolutionChipLandscape(res)
+                            .disabled(!camera.isResolutionAvailable(res))
+                            .opacity(camera.isResolutionAvailable(res) ? 1 : 0.35)
                     }
                 }
             }
@@ -299,9 +329,22 @@ struct ContentView: View {
                 VStack(spacing: 6) {
                     ForEach(OutputFrameRate.allCases) { fps in
                         frameRateChip(fps)
+                            .disabled(!camera.isFrameRateAvailable(fps))
+                            .opacity(camera.isFrameRateAvailable(fps) ? 1 : 0.35)
                     }
                 }
             }
+
+            Button {
+                camera.stop()
+            } label: {
+                Label("Stop", systemImage: "stop.fill")
+                    .font(.caption.weight(.bold))
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.plain)
+            .padding(.vertical, 8)
+            .glassEffect(.clear.interactive().tint(.red), in: RoundedRectangle(cornerRadius: 10))
         }
         .padding(12)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
@@ -330,7 +373,7 @@ struct ContentView: View {
 
     // Config badge — always-visible current-settings indicator
     private var configBadge: some View {
-        Text("\(camera.selectedResolution.label) · \(camera.selectedFrameRate.label)")
+        Text("\(camera.selectedResolution.label) @ \(camera.selectedFrameRate.label)")
             .font(.caption2.weight(.bold).monospacedDigit())
             .foregroundStyle(.white.opacity(0.85))
             .padding(.horizontal, 12)
@@ -370,7 +413,7 @@ struct ContentView: View {
                 Text(res.label)
                     .font(.caption.weight(.bold))
                 Spacer()
-                Text("\(res.nominalWidth)×\(res.nominalHeight)")
+                Text("\(res.width)x\(res.height)")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }

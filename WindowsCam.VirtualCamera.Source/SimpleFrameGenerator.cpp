@@ -224,6 +224,10 @@ HRESULT SimpleFrameGenerator::_CreateNV12FrameFromBroker(
         m_lastFrame.resize(payloadBytes);
     }
     CopyMemory(m_lastFrame.data(), frameStart, payloadBytes);
+    INT64 finalSequence = 0;
+    CopyMemory(&finalSequence, m_brokerView.get() + 32, sizeof(finalSequence));
+    RETURN_HR_IF(HRESULT_FROM_WIN32(ERROR_RETRY), finalSequence <= 0 || finalSequence != header.Sequence);
+
     m_lastFrameWidth = sourceWidth;
     m_lastFrameHeight = sourceHeight;
 

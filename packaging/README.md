@@ -25,7 +25,7 @@ The published app is self-contained, so people who install the receiver do not n
 
 ## Bundling helper tools
 
-The receiver needs `ffmpeg.exe` and `iproxy.exe` at runtime. Optional device-name helpers are `idevice_id.exe` and `idevicename.exe`.
+The receiver needs `iproxy.exe` at runtime. Optional device-name helpers are `idevice_id.exe` and `idevicename.exe`. The active video path is raw NV12, so `ffmpeg.exe` is not required.
 
 To bundle tools into the installer, place them in:
 

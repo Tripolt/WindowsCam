@@ -1,9 +1,11 @@
+using System.Buffers;
 using System.Buffers.Binary;
 using System.Diagnostics;
 using System.IO.MemoryMappedFiles;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Win32;
 
 namespace WindowsCamReceiver;
 
@@ -22,33 +24,33 @@ internal sealed class MainForm : Form
     private const int DevicePort = 48650;
     private const int LocalPort = 48650;
     private const string CameraName = "WindowsCam";
+    private const string SourceClsid = "{D9E25520-0B1B-4CE2-9C8E-6F9B4698B1D5}";
 
     private readonly Label _statusLabel = new();
     private readonly Label _cameraLabel = new();
     private readonly Label _deviceLabel = new();
     private readonly Label _streamLabel = new();
+    private readonly Label _linkLabel = new();
     private readonly Button _startButton = new();
     private readonly Button _stopButton = new();
-    private readonly Button _registerCameraButton = new();
+    private readonly Button _repairCameraButton = new();
     private readonly Button _removeCameraButton = new();
     private readonly Button _openGuideButton = new();
     private readonly TextBox _logBox = new();
 
     private readonly CancellationTokenSource _closing = new();
     private readonly StringBuilder _iproxyLog = new();
-    private readonly StringBuilder _ffmpegLog = new();
     private CancellationTokenSource? _runToken;
     private Process? _iproxy;
-    private Process? _ffmpeg;
     private Task? _receiveTask;
-    private long _droppedFrames;
+    private DateTime _lastThroughputWarningUtc = DateTime.MinValue;
 
     public MainForm()
     {
         Text = "WindowsCam";
-        Width = 700;
-        Height = 500;
-        MinimumSize = new Size(580, 420);
+        Width = 780;
+        Height = 560;
+        MinimumSize = new Size(650, 460);
         StartPosition = FormStartPosition.CenterScreen;
 
         var layout = new TableLayoutPanel
@@ -56,7 +58,7 @@ internal sealed class MainForm : Form
             Dock = DockStyle.Fill,
             Padding = new Padding(16),
             ColumnCount = 2,
-            RowCount = 8
+            RowCount = 9
         };
 
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 130));
@@ -66,11 +68,13 @@ internal sealed class MainForm : Form
         AddRow(layout, 1, "Camera", _cameraLabel);
         AddRow(layout, 2, "Device", _deviceLabel);
         AddRow(layout, 3, "Input", _streamLabel);
+        AddRow(layout, 4, "Raw Link", _linkLabel);
 
         _statusLabel.Text = "Idle";
-        _cameraLabel.Text = "WindowsCam virtual camera";
+        _cameraLabel.Text = "Checking registration";
         _deviceLabel.Text = "No device checked yet";
         _streamLabel.Text = "No iPhone stream";
+        _linkLabel.Text = "No raw frames yet";
 
         var cameraActions = new FlowLayoutPanel
         {
@@ -79,9 +83,9 @@ internal sealed class MainForm : Form
             AutoSize = true
         };
 
-        _registerCameraButton.Text = "Register Camera";
-        _registerCameraButton.Width = 135;
-        _registerCameraButton.Click += async (_, _) => await RunVirtualCameraToolAsync("register");
+        _repairCameraButton.Text = "Repair Camera";
+        _repairCameraButton.Width = 135;
+        _repairCameraButton.Click += async (_, _) => await RunVirtualCameraToolAsync("register");
 
         _removeCameraButton.Text = "Remove Camera";
         _removeCameraButton.Width = 125;
@@ -91,11 +95,11 @@ internal sealed class MainForm : Form
         _openGuideButton.Width = 110;
         _openGuideButton.Click += (_, _) => OpenGuide();
 
-        cameraActions.Controls.Add(_registerCameraButton);
+        cameraActions.Controls.Add(_repairCameraButton);
         cameraActions.Controls.Add(_removeCameraButton);
         cameraActions.Controls.Add(_openGuideButton);
-        layout.Controls.Add(new Label { Text = "", Dock = DockStyle.Fill }, 0, 4);
-        layout.Controls.Add(cameraActions, 1, 4);
+        layout.Controls.Add(new Label { Text = "", Dock = DockStyle.Fill }, 0, 5);
+        layout.Controls.Add(cameraActions, 1, 5);
 
         var buttons = new FlowLayoutPanel
         {
@@ -116,8 +120,8 @@ internal sealed class MainForm : Form
         buttons.Controls.Add(_startButton);
         buttons.Controls.Add(_stopButton);
 
-        layout.Controls.Add(new Label { Text = "", Dock = DockStyle.Fill }, 0, 5);
-        layout.Controls.Add(buttons, 1, 5);
+        layout.Controls.Add(new Label { Text = "", Dock = DockStyle.Fill }, 0, 6);
+        layout.Controls.Add(buttons, 1, 6);
 
         _logBox.Multiline = true;
         _logBox.ReadOnly = true;
@@ -125,22 +129,28 @@ internal sealed class MainForm : Form
         _logBox.Dock = DockStyle.Fill;
         _logBox.Font = new Font(FontFamily.GenericMonospace, 9);
         layout.SetColumnSpan(_logBox, 2);
-        layout.Controls.Add(_logBox, 0, 7);
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+        layout.Controls.Add(_logBox, 0, 8);
+
+        for (var i = 0; i < 5; i++)
+        {
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+        }
+
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 8));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
         Controls.Add(layout);
-        Shown += (_, _) => LogStartupReadiness();
+        Shown += (_, _) =>
+        {
+            LogStartupReadiness();
+            StartReceiver();
+        };
         FormClosing += (_, _) =>
         {
             _closing.Cancel();
-            StopReceiver();
+            StopReceiver(updateStatus: false);
         };
     }
 
@@ -169,43 +179,16 @@ internal sealed class MainForm : Form
         _startButton.Enabled = false;
         _stopButton.Enabled = true;
         SetStatus("Starting");
-        _receiveTask = Task.Run(() => RunAsync(_runToken.Token));
-    }
-
-    private void OpenGuide()
-    {
-        var guidePath = Path.Combine(AppContext.BaseDirectory, "WINDOWS_INSTALL.md");
-        if (!File.Exists(guidePath))
-        {
-            guidePath = Path.Combine(AppContext.BaseDirectory, "README.md");
-        }
-
-        if (File.Exists(guidePath))
-        {
-            Process.Start(new ProcessStartInfo
-            {
-                FileName = guidePath,
-                UseShellExecute = true
-            });
-        }
-        else
-        {
-            Process.Start(new ProcessStartInfo
-            {
-                FileName = "ms-settings:privacy-webcam",
-                UseShellExecute = true
-            });
-        }
+        _receiveTask = Task.Run(() => RunSupervisorAsync(_runToken.Token));
     }
 
     private void StopReceiver(bool updateStatus = true)
     {
-        _runToken?.Cancel();
+        var runToken = _runToken;
         _runToken = null;
-        KillProcess(_ffmpeg);
-        KillProcess(_iproxy);
-        _ffmpeg = null;
-        _iproxy = null;
+        runToken?.Cancel();
+        CleanupChildProcesses();
+
         _startButton.Enabled = true;
         _stopButton.Enabled = false;
         if (updateStatus)
@@ -214,80 +197,106 @@ internal sealed class MainForm : Form
         }
     }
 
-    private async Task RunAsync(CancellationToken token)
+    private async Task RunSupervisorAsync(CancellationToken token)
     {
+        var reconnectDelay = TimeSpan.FromSeconds(1);
+
         try
         {
-            var device = await DetectDeviceAsync(token);
-            InvokeUi(() => _deviceLabel.Text = device);
-
-            _iproxy = StartProcess(FindTool("iproxy")!, $"{LocalPort}:{DevicePort}", "iproxy");
-            await Task.Delay(1000, token);
-            ThrowIfExited(_iproxy, "iproxy", _iproxyLog);
-
-            SetStatus("Connecting to iPhone app");
-            using var client = new TcpClient();
-            client.NoDelay = true;
-            await client.ConnectAsync("127.0.0.1", LocalPort, token);
-            client.NoDelay = true;
-            await using var stream = client.GetStream();
-
-            var helloBytes = await ReadPacketAsync(stream, token);
-            var hello = JsonSerializer.Deserialize<StreamHello>(helloBytes, new JsonSerializerOptions
+            while (!token.IsCancellationRequested)
             {
-                PropertyNameCaseInsensitive = true
-            }) ?? throw new InvalidDataException("The iPhone stream did not send camera metadata.");
+                try
+                {
+                    await RunSingleSessionAsync(token);
+                    reconnectDelay = TimeSpan.FromSeconds(1);
+                }
+                catch (OperationCanceledException) when (token.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (EndOfStreamException ex)
+                {
+                    SetStatus("Disconnected");
+                    Log(ex.Message);
+                }
+                catch (Exception ex)
+                {
+                    SetStatus("Recovering");
+                    Log(ex.Message);
+                    Log("WindowsCam will keep retrying. Check iPhone trust, the cable, and that the iOS app is open.");
+                }
+                finally
+                {
+                    CleanupChildProcesses();
+                }
 
-            var mode = CameraMode.FromHello(hello);
-            InvokeUi(() => _streamLabel.Text = $"{hello.Codec} {mode.Width}x{mode.Height} {mode.Fps}fps");
-
-            using var broker = new LatestFrameBroker(mode);
-            broker.PublishPlaceholder();
-            _droppedFrames = 0;
-
-            SetStatus("Feeding WindowsCam");
-            Log($"Select '{CameraName}' in Teams, Zoom, a browser, or OBS Video Capture Device.");
-            if (string.Equals(hello.Codec, "nv12-raw", StringComparison.OrdinalIgnoreCase))
-            {
-                await PumpRawNv12FramesAsync(stream, broker, mode, token);
-            }
-            else if (string.Equals(hello.Codec, "h264-annexb", StringComparison.OrdinalIgnoreCase))
-            {
-                _ffmpeg = StartProcess(
-                    FindTool("ffmpeg")!,
-                    BuildFfmpegDecodeArguments(mode),
-                    "ffmpeg",
-                    redirectStandardInput: true,
-                    redirectStandardOutput: true);
-
-                await Task.Delay(500, token);
-                ThrowIfExited(_ffmpeg, "ffmpeg", _ffmpegLog);
-                await PumpDecodedFramesAsync(stream, _ffmpeg, broker, mode, token);
-            }
-            else
-            {
-                throw new InvalidDataException($"Unsupported iPhone stream codec: {hello.Codec}");
+                if (!token.IsCancellationRequested)
+                {
+                    Log($"Retrying raw link in {reconnectDelay.TotalSeconds:0}s.");
+                    await Task.Delay(reconnectDelay, token);
+                    reconnectDelay = TimeSpan.FromSeconds(Math.Min(reconnectDelay.TotalSeconds * 1.5, 8));
+                }
             }
         }
         catch (OperationCanceledException)
         {
             Log("Receiver stopped.");
         }
-        catch (EndOfStreamException)
-        {
-            SetStatus("Disconnected");
-            Log("The iPhone stream ended. Keep the iPhone app open and reconnect the cable if needed.");
-        }
-        catch (Exception ex)
-        {
-            SetStatus("Error");
-            Log(ex.Message);
-            Log("Check that the iPhone is trusted, the iPhone app is open, and required tools/components are installed.");
-        }
         finally
         {
-            InvokeUi(() => StopReceiver(updateStatus: false));
+            CleanupChildProcesses();
+            InvokeUi(() =>
+            {
+                if (_runToken is not null && _runToken.IsCancellationRequested)
+                {
+                    _runToken = null;
+                }
+
+                _startButton.Enabled = _runToken is null;
+                _stopButton.Enabled = _runToken is not null;
+            });
         }
+    }
+
+    private async Task RunSingleSessionAsync(CancellationToken token)
+    {
+        var device = await DetectDeviceAsync(token);
+        InvokeUi(() => _deviceLabel.Text = device);
+
+        _iproxy = StartProcess(FindTool("iproxy")!, $"{LocalPort}:{DevicePort}", "iproxy");
+        await Task.Delay(750, token);
+        ThrowIfExited(_iproxy, "iproxy", _iproxyLog);
+
+        SetStatus("Connecting to iPhone app");
+        using var client = new TcpClient { NoDelay = true, ReceiveBufferSize = 16 * 1024 * 1024 };
+        await client.ConnectAsync("127.0.0.1", LocalPort, token);
+        client.NoDelay = true;
+
+        await using var stream = client.GetStream();
+        var helloBytes = await ReadPacketAsync(stream, token);
+        var hello = JsonSerializer.Deserialize<StreamHello>(helloBytes, JsonOptions.Default)
+            ?? throw new InvalidDataException("The iPhone stream did not send camera metadata.");
+
+        if (!string.Equals(hello.Codec, "nv12-raw", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException($"Unsupported codec '{hello.Codec}'. This build is raw NV12 only.");
+        }
+
+        var mode = CameraMode.FromHello(hello);
+        InvokeUi(() =>
+        {
+            _streamLabel.Text = $"{hello.PixelFormatOrDefault} {mode.Width}x{mode.Height} {mode.Fps}fps";
+            _linkLabel.Text = $"Need {mode.RequiredMegabytesPerSecond:0} MB/s";
+        });
+
+        using var broker = new LatestFrameBroker(mode);
+        broker.PublishPlaceholder();
+
+        SetStatus("Feeding WindowsCam");
+        Log($"Raw NV12 mode {mode.Width}x{mode.Height}@{mode.Fps}: {mode.RequiredMegabytesPerSecond:0.0} MB/s required.");
+        Log($"Select '{CameraName}' in Teams, Zoom, a browser, or OBS Video Capture Device.");
+
+        await PumpRawNv12FramesAsync(stream, broker, mode, Math.Max(hello.FrameHeaderBytes, RawFrameHeader.MinimumHeaderBytes), token);
     }
 
     private async Task<string> DetectDeviceAsync(CancellationToken token)
@@ -331,128 +340,71 @@ internal sealed class MainForm : Form
         return string.IsNullOrWhiteSpace(name) ? udid : $"{name} ({udid})";
     }
 
-    private async Task PumpDecodedFramesAsync(NetworkStream stream, Process ffmpeg, LatestFrameBroker broker, CameraMode mode, CancellationToken token)
+    private async Task PumpRawNv12FramesAsync(NetworkStream stream, LatestFrameBroker broker, CameraMode mode, int frameHeaderBytes, CancellationToken token)
     {
-        using var pumpTokenSource = CancellationTokenSource.CreateLinkedTokenSource(token);
-        var pumpToken = pumpTokenSource.Token;
-        var encodedFrames = new LiveFrameMailbox();
+        var buffer = ArrayPool<byte>.Shared.Rent(mode.Nv12FrameBytes + frameHeaderBytes);
+        var stats = new RawLinkStats(mode);
 
-        var reader = Task.Run(() => ReadEncodedFramesAsync(stream, encodedFrames, pumpToken), pumpToken);
-        var decoderInput = Task.Run(() => WriteEncodedFramesAsync(encodedFrames, ffmpeg.StandardInput.BaseStream, pumpToken), pumpToken);
-        var decoderOutput = Task.Run(() => PublishDecodedFramesAsync(ffmpeg.StandardOutput.BaseStream, broker, mode, pumpToken), pumpToken);
-
-        try
-        {
-            await Task.WhenAny(reader, decoderInput, decoderOutput);
-            await pumpTokenSource.CancelAsync();
-            encodedFrames.Complete();
-            await Task.WhenAll(reader, decoderInput, decoderOutput);
-        }
-        catch
-        {
-            await pumpTokenSource.CancelAsync();
-            encodedFrames.Complete();
-            throw;
-        }
-    }
-
-    private async Task PumpRawNv12FramesAsync(NetworkStream stream, LatestFrameBroker broker, CameraMode mode, CancellationToken token)
-    {
-        var frameCount = 0L;
-
-        while (!token.IsCancellationRequested)
-        {
-            var frame = await ReadPacketAsync(stream, token);
-            if (frame.Length != mode.Nv12FrameBytes)
-            {
-                Log($"Dropped malformed NV12 frame: expected {mode.Nv12FrameBytes} bytes but received {frame.Length}.");
-                continue;
-            }
-
-            broker.PublishFrame(frame);
-            frameCount++;
-
-            if (frameCount == 1 || frameCount % (mode.Fps * 10) == 0)
-            {
-                Log($"Published {frameCount} raw NV12 frame(s) to WindowsCam at {mode.Width}x{mode.Height}.");
-            }
-        }
-    }
-
-    private async Task ReadEncodedFramesAsync(NetworkStream stream, LiveFrameMailbox frames, CancellationToken token)
-    {
         try
         {
             while (!token.IsCancellationRequested)
             {
-                var dropped = frames.Publish(new VideoFrame(await ReadPacketAsync(stream, token), Stopwatch.GetTimestamp()));
-                if (dropped)
+                var packetLength = await ReadPacketIntoAsync(stream, buffer, token);
+                var frameOffset = 0;
+                var frameBytes = packetLength;
+                RawFrameHeader? rawHeader = null;
+
+                if (RawFrameHeader.TryRead(buffer.AsSpan(0, packetLength), out var header))
                 {
-                    var droppedFrames = Interlocked.Increment(ref _droppedFrames);
-                    if (droppedFrames == 1 || droppedFrames % 30 == 0)
+                    rawHeader = header;
+                    frameOffset = header.HeaderBytes;
+                    frameBytes = header.PayloadBytes;
+
+                    if (header.Width != mode.Width || header.Height != mode.Height || header.Fps != mode.Fps || header.LumaStride != mode.Width)
                     {
-                        Log($"Dropped {droppedFrames} stale encoded frame(s) to keep latency live.");
+                        stats.MalformedFrames++;
+                        Log($"Dropped raw frame with mismatched header {header.Width}x{header.Height}@{header.Fps}, stride {header.LumaStride}; expected {mode.Width}x{mode.Height}@{mode.Fps}.");
+                        continue;
+                    }
+
+                    if (packetLength != header.HeaderBytes + header.PayloadBytes)
+                    {
+                        stats.MalformedFrames++;
+                        Log($"Dropped raw frame with invalid packet size {packetLength}; header says {header.PayloadBytes} payload bytes.");
+                        continue;
+                    }
+                }
+                else if (packetLength != mode.Nv12FrameBytes)
+                {
+                    stats.MalformedFrames++;
+                    Log($"Dropped malformed raw frame: expected {mode.Nv12FrameBytes} bytes or raw-v2 header but received {packetLength}.");
+                    continue;
+                }
+
+                if (frameBytes != mode.Nv12FrameBytes)
+                {
+                    stats.MalformedFrames++;
+                    Log($"Dropped raw frame: expected {mode.Nv12FrameBytes} NV12 bytes but received {frameBytes}.");
+                    continue;
+                }
+
+                broker.PublishFrame(buffer, frameOffset, frameBytes);
+                stats.RecordFrame(packetLength, rawHeader?.Sequence ?? 0);
+
+                if (stats.ShouldPublish(DateTime.UtcNow, out var report))
+                {
+                    InvokeUi(() => _linkLabel.Text = report.Summary);
+                    if (report.IsThroughputLow && DateTime.UtcNow - _lastThroughputWarningUtc > TimeSpan.FromSeconds(10))
+                    {
+                        _lastThroughputWarningUtc = DateTime.UtcNow;
+                        Log(report.Warning);
                     }
                 }
             }
         }
         finally
         {
-            frames.Complete();
-        }
-    }
-
-    private async Task WriteEncodedFramesAsync(LiveFrameMailbox frames, Stream ffmpegInput, CancellationToken token)
-    {
-        var waitingForKeyFrame = false;
-        var lastDropCount = 0L;
-
-        while (!token.IsCancellationRequested)
-        {
-            var frame = await frames.ReadAsync(token);
-            if (frame is null)
-            {
-                return;
-            }
-
-            var dropCount = Interlocked.Read(ref _droppedFrames);
-            if (dropCount != lastDropCount)
-            {
-                waitingForKeyFrame = true;
-                lastDropCount = dropCount;
-            }
-
-            if (waitingForKeyFrame)
-            {
-                if (!H264AnnexB.IsKeyFrame(frame.Value.Data))
-                {
-                    continue;
-                }
-
-                waitingForKeyFrame = false;
-                Log("Recovered decoder on next H.264 keyframe after dropping stale frames.");
-            }
-
-            await ffmpegInput.WriteAsync(frame.Value.Data, token);
-            await ffmpegInput.FlushAsync(token);
-        }
-    }
-
-    private async Task PublishDecodedFramesAsync(Stream ffmpegOutput, LatestFrameBroker broker, CameraMode mode, CancellationToken token)
-    {
-        var frame = new byte[mode.Nv12FrameBytes];
-        var frameCount = 0L;
-
-        while (!token.IsCancellationRequested)
-        {
-            await ReadExactlyAsync(ffmpegOutput, frame, token);
-            broker.PublishFrame(frame);
-            frameCount++;
-
-            if (frameCount == 1 || frameCount % (mode.Fps * 10) == 0)
-            {
-                Log($"Published {frameCount} decoded NV12 frame(s) to WindowsCam at {mode.Width}x{mode.Height}.");
-            }
+            ArrayPool<byte>.Shared.Return(buffer);
         }
     }
 
@@ -468,49 +420,66 @@ internal sealed class MainForm : Form
         return await ReadExactlyAsync(stream, checked((int)length), token);
     }
 
+    private static async Task<int> ReadPacketIntoAsync(NetworkStream stream, byte[] buffer, CancellationToken token)
+    {
+        var lengthBytes = await ReadExactlyAsync(stream, 4, token);
+        var length = BinaryPrimitives.ReadUInt32BigEndian(lengthBytes);
+        if (length == 0 || length > 64 * 1024 * 1024)
+        {
+            throw new InvalidDataException($"Invalid packet length: {length}");
+        }
+
+        if (length > buffer.Length)
+        {
+            throw new InvalidDataException($"Raw packet length {length} exceeds receiver buffer {buffer.Length}.");
+        }
+
+        await ReadExactlyAsync(stream, buffer.AsMemory(0, checked((int)length)), token);
+        return checked((int)length);
+    }
+
     private static async Task<byte[]> ReadExactlyAsync(Stream stream, int length, CancellationToken token)
     {
         var buffer = new byte[length];
-        await ReadExactlyAsync(stream, buffer, token);
+        await ReadExactlyAsync(stream, buffer.AsMemory(), token);
         return buffer;
     }
 
-    private static async Task ReadExactlyAsync(Stream stream, byte[] buffer, CancellationToken token)
+    private static async Task ReadExactlyAsync(Stream stream, Memory<byte> buffer, CancellationToken token)
     {
         var offset = 0;
         while (offset < buffer.Length)
         {
-            var read = await stream.ReadAsync(buffer.AsMemory(offset, buffer.Length - offset), token);
+            var read = await stream.ReadAsync(buffer[offset..], token);
             if (read == 0)
             {
-                throw new EndOfStreamException("The video stream disconnected.");
+                throw new EndOfStreamException("The raw video stream disconnected.");
             }
 
             offset += read;
         }
     }
 
-    private static string BuildFfmpegDecodeArguments(CameraMode mode)
+    private void OpenGuide()
     {
-        return "-hide_banner -loglevel error " +
-            "-fflags nobuffer+genpts -flags low_delay -avioflags direct " +
-            "-probesize 32 -analyzeduration 0 -fpsprobesize 0 " +
-            $"-r {mode.Fps} -f h264 -i pipe:0 -an " +
-            $"-vf scale={mode.Width}:{mode.Height}:flags=fast_bilinear,format=nv12 " +
-            "-f rawvideo -pix_fmt nv12 pipe:1";
+        var guidePath = Path.Combine(AppContext.BaseDirectory, "WINDOWS_INSTALL.md");
+        if (!File.Exists(guidePath))
+        {
+            guidePath = Path.Combine(AppContext.BaseDirectory, "README.md");
+        }
+
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = File.Exists(guidePath) ? guidePath : "ms-settings:privacy-webcam",
+            UseShellExecute = true
+        });
     }
 
-    private Process StartProcess(
-        string fileName,
-        string arguments,
-        string label,
-        bool redirectStandardInput = false,
-        bool redirectStandardOutput = false)
+    private Process StartProcess(string fileName, string arguments, string label)
     {
-        var logBuffer = label == "iproxy" ? _iproxyLog : _ffmpegLog;
-        lock (logBuffer)
+        lock (_iproxyLog)
         {
-            logBuffer.Clear();
+            _iproxyLog.Clear();
         }
 
         Log($"Starting {label}: {fileName} {arguments}");
@@ -521,27 +490,28 @@ internal sealed class MainForm : Form
                 FileName = fileName,
                 Arguments = arguments,
                 UseShellExecute = false,
-                RedirectStandardInput = redirectStandardInput,
-                RedirectStandardOutput = redirectStandardOutput || label != "ffmpeg",
+                RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 CreateNoWindow = true
             },
             EnableRaisingEvents = true
         };
 
-        if (!redirectStandardOutput)
+        process.OutputDataReceived += (_, e) => AppendToolLog(_iproxyLog, label, e.Data);
+        process.ErrorDataReceived += (_, e) => AppendToolLog(_iproxyLog, label, e.Data);
+        process.Exited += (_, _) =>
         {
-            process.OutputDataReceived += (_, e) => AppendToolLog(logBuffer, label, e.Data);
-        }
-
-        process.ErrorDataReceived += (_, e) => AppendToolLog(logBuffer, label, e.Data);
-        process.Exited += (_, _) => Log($"{label} exited with code {process.ExitCode}.");
+            try
+            {
+                Log($"{label} exited with code {process.ExitCode}.");
+            }
+            catch
+            {
+                Log($"{label} exited.");
+            }
+        };
         process.Start();
-        if (!redirectStandardOutput)
-        {
-            process.BeginOutputReadLine();
-        }
-
+        process.BeginOutputReadLine();
         process.BeginErrorReadLine();
         return process;
     }
@@ -551,7 +521,7 @@ internal sealed class MainForm : Form
         var toolPath = FindTool("WindowsCam.VirtualCamera.Tool", required: false);
         if (toolPath is null)
         {
-            Log("WindowsCam.VirtualCamera.Tool.exe is not installed yet. Build and bundle the native virtual camera tool before registering the camera.");
+            Log("WindowsCam.VirtualCamera.Tool.exe is not installed yet. Build and bundle the native virtual camera tool before repairing the camera.");
             return;
         }
 
@@ -571,6 +541,7 @@ internal sealed class MainForm : Form
         finally
         {
             SetCameraButtons(true);
+            CheckCameraRegistration();
         }
     }
 
@@ -578,7 +549,7 @@ internal sealed class MainForm : Form
     {
         InvokeUi(() =>
         {
-            _registerCameraButton.Enabled = enabled;
+            _repairCameraButton.Enabled = enabled;
             _removeCameraButton.Enabled = enabled;
         });
     }
@@ -688,18 +659,46 @@ internal sealed class MainForm : Form
 
     private void LogStartupReadiness()
     {
-        foreach (var tool in new[] { "iproxy", "ffmpeg" })
+        CheckCameraRegistration();
+
+        if (FindTool("iproxy", required: false) is null)
         {
-            if (FindTool(tool, required: false) is null)
-            {
-                Log($"{tool}.exe not found. Put it in the app's Tools folder or add it to PATH.");
-            }
+            Log("iproxy.exe not found. Put it in the app's Tools folder or add it to PATH.");
         }
 
         if (FindTool("WindowsCam.VirtualCamera.Tool", required: false) is null)
         {
-            Log("Native virtual camera registration tool not found. The receiver can decode frames, but Windows apps will not see a camera until the native component is bundled.");
+            Log("Native virtual camera repair tool not found. The receiver can read raw frames, but Windows apps may not see the camera.");
         }
+    }
+
+    private void CheckCameraRegistration()
+    {
+        try
+        {
+            using var key = Registry.LocalMachine.OpenSubKey($@"Software\Classes\CLSID\{SourceClsid}\InprocServer32");
+            var value = key?.GetValue(null) as string;
+            var path = string.IsNullOrWhiteSpace(value) ? "" : Environment.ExpandEnvironmentVariables(value);
+
+            if (!string.IsNullOrWhiteSpace(path) && File.Exists(path))
+            {
+                InvokeUi(() => _cameraLabel.Text = $"Registered ({path})");
+                return;
+            }
+
+            InvokeUi(() => _cameraLabel.Text = "Not registered - click Repair Camera");
+        }
+        catch (Exception ex)
+        {
+            InvokeUi(() => _cameraLabel.Text = "Registration check failed");
+            Log($"Could not check virtual camera registration: {ex.Message}");
+        }
+    }
+
+    private void CleanupChildProcesses()
+    {
+        KillProcess(_iproxy);
+        _iproxy = null;
     }
 
     private static void KillProcess(Process? process)
@@ -727,7 +726,7 @@ internal sealed class MainForm : Form
 
     private void Log(string message)
     {
-        if (IsDisposed)
+        if (IsDisposed || !IsHandleCreated)
         {
             return;
         }
@@ -740,7 +739,7 @@ internal sealed class MainForm : Form
 
     private void InvokeUi(Action action)
     {
-        if (IsDisposed)
+        if (IsDisposed || !IsHandleCreated)
         {
             return;
         }
@@ -760,30 +759,160 @@ internal sealed class StreamHello
 {
     public int Version { get; set; }
     public string Codec { get; set; } = "";
+    public string PixelFormat { get; set; } = "";
     public int Width { get; set; }
     public int Height { get; set; }
     public int Fps { get; set; }
+    public int LumaStride { get; set; }
+    public int BytesPerFrame { get; set; }
+    public int BytesPerSecond { get; set; }
+    public int FrameHeaderBytes { get; set; }
     public string Orientation { get; set; } = "";
     public string Framing { get; set; } = "";
+
+    public string PixelFormatOrDefault => string.IsNullOrWhiteSpace(PixelFormat) ? "nv12" : PixelFormat;
 }
 
 internal readonly record struct CameraMode(int Width, int Height, int Fps)
 {
     public int Nv12FrameBytes => checked(Width * Height * 3 / 2);
+    public double RequiredMegabytesPerSecond => Nv12FrameBytes * (double)Fps / 1_000_000;
 
     public static CameraMode FromHello(StreamHello hello)
     {
         var fps = hello.Fps > 0 ? hello.Fps : 30;
-        var requested = new CameraMode(hello.Width, hello.Height, fps);
+        var mode = new CameraMode(hello.Width, hello.Height, fps);
 
-        return requested switch
+        if (mode.Width <= 0 || mode.Height <= 0 || mode.Width % 2 != 0 || mode.Height % 2 != 0)
         {
-            { Width: >= 3840, Height: >= 2160 } => new CameraMode(3840, 2160, 30),
-            { Width: >= 1920, Height: >= 1080 } => new CameraMode(1920, 1080, 30),
-            _ => new CameraMode(1280, 720, 30)
-        };
+            throw new InvalidDataException($"Invalid raw frame size in hello: {mode.Width}x{mode.Height}.");
+        }
+
+        if (mode.Fps is < 1 or > 120)
+        {
+            throw new InvalidDataException($"Invalid raw frame rate in hello: {mode.Fps}.");
+        }
+
+        if (hello.LumaStride > 0 && hello.LumaStride != mode.Width)
+        {
+            throw new InvalidDataException($"Unsupported luma stride {hello.LumaStride}; packed NV12 stride must equal width.");
+        }
+
+        if (hello.BytesPerFrame > 0 && hello.BytesPerFrame != mode.Nv12FrameBytes)
+        {
+            throw new InvalidDataException($"Hello says {hello.BytesPerFrame} bytes/frame, expected {mode.Nv12FrameBytes} for {mode.Width}x{mode.Height} NV12.");
+        }
+
+        return mode;
     }
 }
+
+internal readonly record struct RawFrameHeader(
+    int HeaderBytes,
+    int Width,
+    int Height,
+    int Fps,
+    int LumaStride,
+    int PayloadBytes,
+    ulong Sequence,
+    ulong CapturedAtNs)
+{
+    public const int MinimumHeaderBytes = 48;
+    private const uint Magic = 0x5746524D; // WFRM
+    private const ushort Version = 2;
+
+    public static bool TryRead(ReadOnlySpan<byte> packet, out RawFrameHeader header)
+    {
+        header = default;
+        if (packet.Length < MinimumHeaderBytes)
+        {
+            return false;
+        }
+
+        if (BinaryPrimitives.ReadUInt32BigEndian(packet[..4]) != Magic)
+        {
+            return false;
+        }
+
+        var version = BinaryPrimitives.ReadUInt16BigEndian(packet.Slice(4, 2));
+        var headerBytes = BinaryPrimitives.ReadUInt16BigEndian(packet.Slice(6, 2));
+        if (version != Version || headerBytes < MinimumHeaderBytes || headerBytes > packet.Length)
+        {
+            return false;
+        }
+
+        var width = checked((int)BinaryPrimitives.ReadUInt32BigEndian(packet.Slice(8, 4)));
+        var height = checked((int)BinaryPrimitives.ReadUInt32BigEndian(packet.Slice(12, 4)));
+        var fps = checked((int)BinaryPrimitives.ReadUInt32BigEndian(packet.Slice(16, 4)));
+        var lumaStride = checked((int)BinaryPrimitives.ReadUInt32BigEndian(packet.Slice(20, 4)));
+        var payloadBytes = checked((int)BinaryPrimitives.ReadUInt32BigEndian(packet.Slice(24, 4)));
+        var sequence = BinaryPrimitives.ReadUInt64BigEndian(packet.Slice(28, 8));
+        var capturedAtNs = BinaryPrimitives.ReadUInt64BigEndian(packet.Slice(36, 8));
+
+        header = new RawFrameHeader(headerBytes, width, height, fps, lumaStride, payloadBytes, sequence, capturedAtNs);
+        return true;
+    }
+}
+
+internal sealed class RawLinkStats
+{
+    private readonly CameraMode _mode;
+    private readonly Stopwatch _window = Stopwatch.StartNew();
+    private long _frames;
+    private long _bytes;
+    private ulong _lastSequence;
+
+    public long MalformedFrames { get; set; }
+    public long MissedFrames { get; private set; }
+
+    public RawLinkStats(CameraMode mode)
+    {
+        _mode = mode;
+    }
+
+    public void RecordFrame(int packetBytes, ulong sequence)
+    {
+        _frames++;
+        _bytes += packetBytes;
+        if (sequence > 0 && _lastSequence > 0 && sequence > _lastSequence + 1)
+        {
+            MissedFrames += checked((long)(sequence - _lastSequence - 1));
+        }
+
+        if (sequence > 0)
+        {
+            _lastSequence = sequence;
+        }
+    }
+
+    public bool ShouldPublish(DateTime now, out RawLinkReport report)
+    {
+        _ = now;
+        report = default;
+        if (_window.Elapsed < TimeSpan.FromSeconds(1))
+        {
+            return false;
+        }
+
+        var seconds = Math.Max(_window.Elapsed.TotalSeconds, 0.001);
+        var fps = _frames / seconds;
+        var megabytesPerSecond = _bytes / seconds / 1_000_000;
+        var required = _mode.RequiredMegabytesPerSecond;
+        var low = fps < _mode.Fps * 0.90 || megabytesPerSecond < required * 0.90;
+
+        report = new RawLinkReport(
+            Summary: $"{megabytesPerSecond:0} MB/s {fps:0.0} fps (need {required:0})",
+            Warning: $"USB throughput warning: measured {megabytesPerSecond:0.0} MB/s and {fps:0.0} fps for {_mode.Width}x{_mode.Height}@{_mode.Fps}. A cable, hub, port, or iPhone capture path is not sustaining raw NV12 in real time.",
+            IsThroughputLow: low);
+
+        _frames = 0;
+        _bytes = 0;
+        _window.Restart();
+        return true;
+    }
+}
+
+internal readonly record struct RawLinkReport(string Summary, string Warning, bool IsThroughputLow);
 
 internal sealed class LatestFrameBroker : IDisposable
 {
@@ -792,7 +921,6 @@ internal sealed class LatestFrameBroker : IDisposable
     private const int Version = 1;
 
     private readonly CameraMode _mode;
-    private readonly string _filePath;
     private readonly MemoryMappedFile _mappedFile;
     private readonly MemoryMappedViewAccessor _accessor;
     private long _sequence;
@@ -805,14 +933,14 @@ internal sealed class LatestFrameBroker : IDisposable
             "WindowsCam");
         Directory.CreateDirectory(directory);
 
-        _filePath = Path.Combine(directory, "latest-frame.mmf");
+        var filePath = Path.Combine(directory, "latest-frame.mmf");
         var totalBytes = HeaderBytes + mode.Nv12FrameBytes;
-        using (var file = new FileStream(_filePath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.ReadWrite))
+        using (var file = new FileStream(filePath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.ReadWrite))
         {
             file.SetLength(totalBytes);
         }
 
-        _mappedFile = MemoryMappedFile.CreateFromFile(_filePath, FileMode.Open, null, totalBytes, MemoryMappedFileAccess.ReadWrite);
+        _mappedFile = MemoryMappedFile.CreateFromFile(filePath, FileMode.Open, null, totalBytes, MemoryMappedFileAccess.ReadWrite);
         _accessor = _mappedFile.CreateViewAccessor(0, totalBytes, MemoryMappedFileAccess.ReadWrite);
     }
 
@@ -822,28 +950,28 @@ internal sealed class LatestFrameBroker : IDisposable
         var yBytes = _mode.Width * _mode.Height;
         Array.Fill<byte>(frame, 16, 0, yBytes);
         Array.Fill<byte>(frame, 128, yBytes, frame.Length - yBytes);
-        PublishFrame(frame);
+        PublishFrame(frame, 0, frame.Length);
     }
 
-    public void PublishFrame(byte[] nv12Frame)
+    public void PublishFrame(byte[] nv12Frame, int offset, int count)
     {
-        if (nv12Frame.Length != _mode.Nv12FrameBytes)
+        if (count != _mode.Nv12FrameBytes)
         {
-            throw new InvalidDataException($"Expected {_mode.Nv12FrameBytes} NV12 bytes but received {nv12Frame.Length}.");
+            throw new InvalidDataException($"Expected {_mode.Nv12FrameBytes} NV12 bytes but received {count}.");
         }
 
         var sequence = Interlocked.Increment(ref _sequence);
         _accessor.Write(32, 0L);
-        _accessor.WriteArray(HeaderBytes, nv12Frame, 0, nv12Frame.Length);
+        _accessor.WriteArray(HeaderBytes, nv12Frame, offset, count);
         _accessor.Write(0, Magic);
         _accessor.Write(8, Version);
         _accessor.Write(12, _mode.Width);
         _accessor.Write(16, _mode.Height);
         _accessor.Write(20, _mode.Fps);
         _accessor.Write(24, _mode.Width);
-        _accessor.Write(28, nv12Frame.Length);
-        _accessor.Write(32, sequence);
+        _accessor.Write(28, count);
         _accessor.Write(40, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        _accessor.Write(32, sequence);
     }
 
     public void Dispose()
@@ -853,139 +981,12 @@ internal sealed class LatestFrameBroker : IDisposable
     }
 }
 
-internal sealed class LiveFrameMailbox
+internal static class JsonOptions
 {
-    private readonly object _gate = new();
-    private readonly SemaphoreSlim _signal = new(0, 1);
-    private VideoFrame? _latest;
-    private bool _completed;
-
-    public bool Publish(VideoFrame frame)
+    public static readonly JsonSerializerOptions Default = new()
     {
-        var dropped = false;
-        var shouldSignal = false;
-
-        lock (_gate)
-        {
-            if (_completed)
-            {
-                return false;
-            }
-
-            dropped = _latest.HasValue;
-            shouldSignal = !_latest.HasValue;
-            _latest = frame;
-        }
-
-        if (shouldSignal)
-        {
-            _signal.Release();
-        }
-
-        return dropped;
-    }
-
-    public void Complete()
-    {
-        var shouldSignal = false;
-
-        lock (_gate)
-        {
-            if (_completed)
-            {
-                return;
-            }
-
-            _completed = true;
-            shouldSignal = !_latest.HasValue;
-        }
-
-        if (shouldSignal)
-        {
-            _signal.Release();
-        }
-    }
-
-    public async ValueTask<VideoFrame?> ReadAsync(CancellationToken token)
-    {
-        while (true)
-        {
-            await _signal.WaitAsync(token);
-
-            lock (_gate)
-            {
-                if (_latest.HasValue)
-                {
-                    var frame = _latest.Value;
-                    _latest = null;
-                    return frame;
-                }
-
-                if (_completed)
-                {
-                    return null;
-                }
-            }
-        }
-    }
-}
-
-internal readonly record struct VideoFrame(byte[] Data, long CapturedAt);
-
-internal static class H264AnnexB
-{
-    public static bool IsKeyFrame(byte[] frame)
-    {
-        var data = frame.AsSpan();
-        var offset = 0;
-
-        while (TryFindStartCode(data, offset, out var startCodeOffset, out var nalOffset))
-        {
-            if (nalOffset >= data.Length)
-            {
-                return false;
-            }
-
-            var nalType = data[nalOffset] & 0x1F;
-            if (nalType == 5)
-            {
-                return true;
-            }
-
-            offset = Math.Max(nalOffset + 1, startCodeOffset + 3);
-        }
-
-        return false;
-    }
-
-    private static bool TryFindStartCode(ReadOnlySpan<byte> data, int offset, out int startCodeOffset, out int nalOffset)
-    {
-        for (var i = offset; i + 3 < data.Length; i++)
-        {
-            if (data[i] != 0 || data[i + 1] != 0)
-            {
-                continue;
-            }
-
-            if (data[i + 2] == 1)
-            {
-                startCodeOffset = i;
-                nalOffset = i + 3;
-                return true;
-            }
-
-            if (i + 4 < data.Length && data[i + 2] == 0 && data[i + 3] == 1)
-            {
-                startCodeOffset = i;
-                nalOffset = i + 4;
-                return true;
-            }
-        }
-
-        startCodeOffset = -1;
-        nalOffset = -1;
-        return false;
-    }
+        PropertyNameCaseInsensitive = true
+    };
 }
 
 internal static class ControlExtensions

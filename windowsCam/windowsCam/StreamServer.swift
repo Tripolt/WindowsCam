@@ -1,14 +1,38 @@
 import Foundation
 import Network
 
-struct StreamHello: Encodable {
-    let version: Int
-    let codec: String
+struct RawVideoFrame {
+    let payload: Data
     let width: Int
     let height: Int
     let fps: Int
+    let lumaStride: Int
+    let capturedAtNs: UInt64
+
+    var payloadBytes: Int { payload.count }
+}
+
+private struct StreamHello: Encodable {
+    let version: Int
+    let codec: String
+    let pixelFormat: String
+    let width: Int
+    let height: Int
+    let fps: Int
+    let lumaStride: Int
+    let bytesPerFrame: Int
+    let bytesPerSecond: Int
+    let frameHeaderBytes: Int
     let orientation: String
     let framing: String
+    let modes: [StreamMode]
+}
+
+private struct StreamMode: Encodable {
+    let width: Int
+    let height: Int
+    let fps: Int
+    let bytesPerSecond: Int
 }
 
 final class StreamServer {
@@ -16,18 +40,17 @@ final class StreamServer {
 
     var onStatusChange: ((String) -> Void)?
 
-    private let queue = DispatchQueue(label: "windowsCam.stream.server")
+    private static let rawFrameMagic: UInt32 = 0x5746524D // WFRM
+    private static let rawFrameVersion: UInt16 = 2
+    private static let rawFrameHeaderBytes: UInt16 = 48
+
+    private let queue = DispatchQueue(label: "windowsCam.stream.server", qos: .userInteractive)
     private var listener: NWListener?
     private var clients: [StreamClient] = []
-    private var latestHello = StreamHello(
-        version: 1,
-        codec: "nv12-raw",
-        width: 1920,
-        height: 1080,
-        fps: 30,
-        orientation: "landscapeRight",
-        framing: "uint32be-length-prefixed"
-    )
+    private var latestMode = RawVideoMode(resolution: .uhd4K, frameRate: .fps40)
+    private var supportedModes = RawVideoMode.preferredOrder
+    private var sequence: UInt64 = 0
+    private var stats = StreamStats()
 
     func start() {
         queue.async {
@@ -73,33 +96,47 @@ final class StreamServer {
             self.listener = nil
             self.clients.forEach { $0.connection.cancel() }
             self.clients.removeAll()
+            self.stats.reset()
         }
     }
 
-    func updateHello(width: Int, height: Int, fps: Int) {
+    func updateMode(_ mode: RawVideoMode, supportedModes: [RawVideoMode]) {
         queue.async {
-            self.latestHello = StreamHello(
-                version: 1,
-                codec: "nv12-raw",
-                width: width,
-                height: height,
-                fps: fps,
-                orientation: "landscapeRight",
-                framing: "uint32be-length-prefixed"
-            )
+            let changed = self.latestMode != mode
+            self.latestMode = mode
+            if !supportedModes.isEmpty {
+                self.supportedModes = supportedModes
+            }
+
+            guard changed else { return }
 
             self.clients.forEach { $0.connection.cancel() }
             self.clients.removeAll()
+            self.stats.reset()
+            self.emit("Raw \(mode.width)x\(mode.height)@\(mode.fps)")
         }
     }
 
-    func broadcast(_ frame: Data) {
+    func broadcast(_ frame: RawVideoFrame) {
         queue.async {
             guard !self.clients.isEmpty else { return }
-            let packet = Self.packet(frame)
+
+            if frame.width != self.latestMode.width || frame.height != self.latestMode.height || frame.fps != self.latestMode.fps {
+                self.latestMode = RawVideoMode(
+                    resolution: OutputResolution.allCases.first { $0.width == frame.width && $0.height == frame.height } ?? self.latestMode.resolution,
+                    frameRate: OutputFrameRate(rawValue: frame.fps) ?? self.latestMode.frameRate
+                )
+                self.clients.forEach { $0.connection.cancel() }
+                self.clients.removeAll()
+                self.stats.reset()
+                return
+            }
+
+            self.sequence &+= 1
+            let packet = Self.packet(frame, sequence: self.sequence)
             self.clients.forEach { client in
                 self.queuePacket(
-                    StreamPacket(data: packet, isDroppable: true, isKeyFrame: true),
+                    StreamPacket(data: packet, isDroppable: true, payloadBytes: frame.payloadBytes),
                     to: client
                 )
             }
@@ -131,27 +168,40 @@ final class StreamServer {
     }
 
     private func sendHello(to client: StreamClient) {
-        guard let data = try? JSONEncoder().encode(latestHello) else { return }
+        let mode = latestMode
+        let hello = StreamHello(
+            version: 2,
+            codec: "nv12-raw",
+            pixelFormat: "nv12",
+            width: mode.width,
+            height: mode.height,
+            fps: mode.fps,
+            lumaStride: mode.width,
+            bytesPerFrame: mode.bytesPerFrame,
+            bytesPerSecond: mode.bytesPerSecond,
+            frameHeaderBytes: Int(Self.rawFrameHeaderBytes),
+            orientation: "landscapeRight",
+            framing: "uint32be-length-prefixed/raw-v2",
+            modes: supportedModes.map {
+                StreamMode(width: $0.width, height: $0.height, fps: $0.fps, bytesPerSecond: $0.bytesPerSecond)
+            }
+        )
+
+        guard let data = try? JSONEncoder().encode(hello) else { return }
         queuePacket(
-            StreamPacket(data: Self.packet(data), isDroppable: false, isKeyFrame: true),
+            StreamPacket(data: Self.packet(data), isDroppable: false, payloadBytes: data.count),
             to: client
         )
     }
 
     private func queuePacket(_ packet: StreamPacket, to client: StreamClient) {
-        if packet.isDroppable, client.needsKeyFrame {
-            guard packet.isKeyFrame else { return }
-            client.needsKeyFrame = false
-        }
-
         if client.isSending {
             if packet.isDroppable, client.pendingPacket?.isDroppable == true {
-                client.needsKeyFrame = true
-                guard packet.isKeyFrame else { return }
-                client.needsKeyFrame = false
+                stats.droppedFrames += 1
             }
 
             client.pendingPacket = packet
+            emitStatsIfNeeded()
             return
         }
 
@@ -169,6 +219,12 @@ final class StreamServer {
                     return
                 }
 
+                if packet.isDroppable {
+                    self.stats.sentFrames += 1
+                    self.stats.sentBytes += packet.payloadBytes
+                    self.emitStatsIfNeeded()
+                }
+
                 if let pendingPacket = client.pendingPacket {
                     client.pendingPacket = nil
                     self.sendNow(pendingPacket, to: client)
@@ -184,6 +240,20 @@ final class StreamServer {
         emit(clients.isEmpty ? "PC camera port \(Self.port)" : "\(clients.count) PC connection(s)")
     }
 
+    private func emitStatsIfNeeded() {
+        let now = Date()
+        let elapsed = now.timeIntervalSince(stats.windowStart)
+        guard elapsed >= 1 else { return }
+
+        let fps = Double(stats.sentFrames) / elapsed
+        let mbps = Double(stats.sentBytes) / elapsed / 1_000_000
+        let required = Double(latestMode.bytesPerSecond) / 1_000_000
+        let warning = fps < Double(latestMode.fps) * 0.90 || mbps < required * 0.90
+        let prefix = warning ? "USB slow" : "Raw link"
+        emit("\(prefix) \(Int(mbps.rounded())) MB/s \(Int(fps.rounded())) fps drop \(stats.droppedFrames)")
+        stats.reset(keepingDropped: true)
+    }
+
     private func emit(_ status: String) {
         DispatchQueue.main.async {
             self.onStatusChange?(status)
@@ -197,12 +267,34 @@ final class StreamServer {
         return packet
     }
 
+    private static func packet(_ frame: RawVideoFrame, sequence: UInt64) -> Data {
+        let payloadLength = Int(rawFrameHeaderBytes) + frame.payload.count
+        var packet = Data()
+        packet.reserveCapacity(MemoryLayout<UInt32>.size + payloadLength)
+        packet.appendUInt32(UInt32(payloadLength))
+        packet.appendUInt32(rawFrameMagic)
+        packet.appendUInt16(rawFrameVersion)
+        packet.appendUInt16(rawFrameHeaderBytes)
+        packet.appendUInt32(UInt32(frame.width))
+        packet.appendUInt32(UInt32(frame.height))
+        packet.appendUInt32(UInt32(frame.fps))
+        packet.appendUInt32(UInt32(frame.lumaStride))
+        packet.appendUInt32(UInt32(frame.payloadBytes))
+        packet.appendUInt64(sequence)
+        packet.appendUInt64(frame.capturedAtNs)
+        packet.appendUInt32(0)
+        frame.payload.withUnsafeBytes { bytes in
+            if let baseAddress = bytes.baseAddress {
+                packet.append(baseAddress.assumingMemoryBound(to: UInt8.self), count: frame.payload.count)
+            }
+        }
+        return packet
+    }
 }
 
 private final class StreamClient {
     let connection: NWConnection
     var isSending = false
-    var needsKeyFrame = false
     var pendingPacket: StreamPacket?
 
     init(connection: NWConnection) {
@@ -213,5 +305,38 @@ private final class StreamClient {
 private struct StreamPacket {
     let data: Data
     let isDroppable: Bool
-    let isKeyFrame: Bool
+    let payloadBytes: Int
+}
+
+private struct StreamStats {
+    var windowStart = Date()
+    var sentFrames = 0
+    var sentBytes = 0
+    var droppedFrames: Int64 = 0
+
+    mutating func reset(keepingDropped: Bool = false) {
+        windowStart = Date()
+        sentFrames = 0
+        sentBytes = 0
+        if !keepingDropped {
+            droppedFrames = 0
+        }
+    }
+}
+
+private extension Data {
+    mutating func appendUInt16(_ value: UInt16) {
+        var bigEndian = value.bigEndian
+        append(Data(bytes: &bigEndian, count: MemoryLayout<UInt16>.size))
+    }
+
+    mutating func appendUInt32(_ value: UInt32) {
+        var bigEndian = value.bigEndian
+        append(Data(bytes: &bigEndian, count: MemoryLayout<UInt32>.size))
+    }
+
+    mutating func appendUInt64(_ value: UInt64) {
+        var bigEndian = value.bigEndian
+        append(Data(bytes: &bigEndian, count: MemoryLayout<UInt64>.size))
+    }
 }

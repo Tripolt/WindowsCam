@@ -4,9 +4,8 @@ Place Windows helper binaries here before running `packaging/Build-Installer.ps1
 
 Expected filenames:
 
-- `ffmpeg.exe`
 - `iproxy.exe`
 - `idevice_id.exe`
 - `idevicename.exe`
 
-The receiver also searches the user's `PATH`, so bundling is convenient but not mandatory.
+Only `iproxy.exe` is required for the raw video link. `idevice_id.exe` and `idevicename.exe` are optional diagnostics. The receiver also searches the user's `PATH`, so bundling is convenient but not mandatory.

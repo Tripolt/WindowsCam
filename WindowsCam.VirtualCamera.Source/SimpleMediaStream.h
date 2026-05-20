@@ -60,6 +60,7 @@ namespace winrt::WindowsSample::implementation
         bool m_bIsShutdown = false;
         MF_STREAM_STATE m_streamState = MF_STREAM_STATE_STOPPED;
         ULONG m_rgbMask = KSPROPERTY_SIMPLEMEDIASOURCE_CUSTOMCONTROL_COLORMODE_BLUE;
+        LONGLONG m_sampleDuration = 333333;
 
         DWORD m_dwStreamId;
         MFSampleAllocatorUsage m_allocatorUsage;

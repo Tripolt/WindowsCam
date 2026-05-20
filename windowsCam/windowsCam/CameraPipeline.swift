@@ -6,51 +6,65 @@ import UIKit
 // MARK: - Output Configuration
 
 enum OutputResolution: String, CaseIterable, Identifiable {
-    case uhd4K   = "4K"
+    case uhd4K = "4K"
     case fhd1080 = "1080p"
-    case hd720   = "720p"
+    case hd720 = "720p"
 
     var id: String { rawValue }
-
-    var sessionPreset: AVCaptureSession.Preset {
-        switch self {
-        case .uhd4K:   return .hd4K3840x2160
-        case .fhd1080: return .hd1920x1080
-        case .hd720:   return .hd1280x720
-        }
-    }
-
     var label: String { rawValue }
 
-    var nominalWidth: Int {
+    var width: Int {
         switch self {
-        case .uhd4K:   return 3840
-        case .fhd1080: return 1920
-        case .hd720:   return 1280
+        case .uhd4K: 3840
+        case .fhd1080: 1920
+        case .hd720: 1280
         }
     }
 
-    var nominalHeight: Int {
+    var height: Int {
         switch self {
-        case .uhd4K:   return 2160
-        case .fhd1080: return 1080
-        case .hd720:   return 720
+        case .uhd4K: 2160
+        case .fhd1080: 1080
+        case .hd720: 720
         }
     }
 }
 
 enum OutputFrameRate: Int, CaseIterable, Identifiable {
     case fps60 = 60
+    case fps40 = 40
     case fps30 = 30
-    case fps24 = 24
 
     var id: Int { rawValue }
-
     var label: String { "\(rawValue) fps" }
 
     var frameDuration: CMTime {
         CMTime(value: 1, timescale: CMTimeScale(rawValue))
     }
+}
+
+struct RawVideoMode: Equatable, Hashable {
+    let resolution: OutputResolution
+    let frameRate: OutputFrameRate
+
+    var width: Int { resolution.width }
+    var height: Int { resolution.height }
+    var fps: Int { frameRate.rawValue }
+    var bytesPerFrame: Int { width * height * 3 / 2 }
+    var bytesPerSecond: Int { bytesPerFrame * fps }
+    var id: String { "\(width)x\(height)@\(fps)" }
+    var label: String { "\(resolution.label) @ \(frameRate.label)" }
+
+    static let preferredOrder: [RawVideoMode] = [
+        RawVideoMode(resolution: .uhd4K, frameRate: .fps40),
+        RawVideoMode(resolution: .uhd4K, frameRate: .fps30),
+        RawVideoMode(resolution: .fhd1080, frameRate: .fps60),
+        RawVideoMode(resolution: .fhd1080, frameRate: .fps40),
+        RawVideoMode(resolution: .fhd1080, frameRate: .fps30),
+        RawVideoMode(resolution: .hd720, frameRate: .fps60),
+        RawVideoMode(resolution: .hd720, frameRate: .fps40),
+        RawVideoMode(resolution: .hd720, frameRate: .fps30)
+    ]
 }
 
 // MARK: - Camera Pipeline
@@ -59,16 +73,21 @@ final class CameraPipeline: NSObject, ObservableObject {
     @Published private(set) var isRunning = false
     @Published private(set) var captureStatus = "Camera idle"
     @Published private(set) var streamStatus = "PC disconnected"
-    @Published var selectedResolution: OutputResolution = .fhd1080
-    @Published var selectedFrameRate: OutputFrameRate = .fps30
+    @Published private(set) var supportedModeIDs: Set<String> = []
+    @Published var selectedResolution: OutputResolution = .uhd4K
+    @Published var selectedFrameRate: OutputFrameRate = .fps40
 
     let session = AVCaptureSession()
 
     private let sessionQueue = DispatchQueue(label: "windowsCam.camera.session")
-    private let videoQueue = DispatchQueue(label: "windowsCam.camera.video")
+    private let videoQueue = DispatchQueue(label: "windowsCam.camera.video", qos: .userInteractive)
     private let streamServer = StreamServer()
+    private let modeLock = NSLock()
     private var configured = false
     private var currentDevice: AVCaptureDevice?
+    private var currentMode = RawVideoMode(resolution: .uhd4K, frameRate: .fps40)
+    private var captureStatsStart = Date()
+    private var captureStatsFrames = 0
     private var cancellables = Set<AnyCancellable>()
 
     override init() {
@@ -78,7 +97,6 @@ final class CameraPipeline: NSObject, ObservableObject {
             self?.streamStatus = status
         }
 
-        // React to setting changes while running
         $selectedResolution
             .dropFirst()
             .sink { [weak self] _ in self?.reconfigure() }
@@ -109,6 +127,24 @@ final class CameraPipeline: NSObject, ObservableObject {
         }
     }
 
+    func isResolutionAvailable(_ resolution: OutputResolution) -> Bool {
+        if supportedModeIDs.isEmpty {
+            return true
+        }
+
+        return OutputFrameRate.allCases.contains { fps in
+            supportedModeIDs.contains(RawVideoMode(resolution: resolution, frameRate: fps).id)
+        }
+    }
+
+    func isFrameRateAvailable(_ frameRate: OutputFrameRate) -> Bool {
+        if supportedModeIDs.isEmpty {
+            return true
+        }
+
+        return supportedModeIDs.contains(RawVideoMode(resolution: selectedResolution, frameRate: frameRate).id)
+    }
+
     func start() {
         sessionQueue.async {
             guard !self.session.isRunning else { return }
@@ -120,7 +156,7 @@ final class CameraPipeline: NSObject, ObservableObject {
                 DispatchQueue.main.async {
                     UIApplication.shared.isIdleTimerDisabled = true
                     self.isRunning = true
-                    self.captureStatus = "Camera starting"
+                    self.captureStatus = "\(self.readCurrentMode().label) raw"
                 }
             } catch {
                 DispatchQueue.main.async {
@@ -146,52 +182,58 @@ final class CameraPipeline: NSObject, ObservableObject {
         }
     }
 
-    /// Reconfigure the session on-the-fly when resolution or frame rate changes.
+    func restart() {
+        sessionQueue.async {
+            if self.session.isRunning {
+                self.session.stopRunning()
+            }
+
+            self.streamServer.stop()
+            self.configured = false
+            self.session.inputs.forEach { self.session.removeInput($0) }
+            self.session.outputs.forEach { self.session.removeOutput($0) }
+
+            do {
+                try self.configureIfNeeded()
+                self.streamServer.start()
+                self.session.startRunning()
+                DispatchQueue.main.async {
+                    UIApplication.shared.isIdleTimerDisabled = true
+                    self.isRunning = true
+                    self.captureStatus = "\(self.readCurrentMode().label) raw"
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self.captureStatus = "Camera error"
+                    self.streamStatus = error.localizedDescription
+                }
+            }
+        }
+    }
+
     private func reconfigure() {
         sessionQueue.async {
-            guard self.configured else { return }
+            guard self.configured, let device = self.currentDevice else { return }
 
-            self.session.beginConfiguration()
-
-            // Update preset
-            let preset = self.selectedResolution.sessionPreset
-            if self.session.canSetSessionPreset(preset) {
-                self.session.sessionPreset = preset
+            do {
+                self.session.beginConfiguration()
+                defer { self.session.commitConfiguration() }
+                let mode = try self.configureDeviceForSelectedMode(device)
+                self.publishActiveMode(mode)
+                DispatchQueue.main.async {
+                    self.captureStatus = "\(mode.label) raw"
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self.captureStatus = "Mode unavailable"
+                    self.streamStatus = error.localizedDescription
+                }
             }
-
-            // Update frame rate
-            if let device = self.currentDevice {
-                try? self.configureFrameRate(on: device)
-            }
-
-            self.session.commitConfiguration()
-
-            self.streamServer.updateHello(
-                width: self.selectedResolution.nominalWidth,
-                height: self.selectedResolution.nominalHeight,
-                fps: self.selectedFrameRate.rawValue
-            )
-            DispatchQueue.main.async {
-                self.captureStatus = "\(self.selectedResolution.nominalWidth)x\(self.selectedResolution.nominalHeight) \(self.selectedFrameRate.rawValue)fps"
-            }
-
         }
     }
 
     private func configureIfNeeded() throws {
         guard !configured else { return }
-
-        session.beginConfiguration()
-        defer { session.commitConfiguration() }
-
-        let preset = selectedResolution.sessionPreset
-        if session.canSetSessionPreset(preset) {
-            session.sessionPreset = preset
-        } else if session.canSetSessionPreset(.hd1280x720) {
-            session.sessionPreset = .hd1280x720
-        } else {
-            session.sessionPreset = .high
-        }
 
         guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) ??
             AVCaptureDevice.default(.builtInDualWideCamera, for: .video, position: .back) ??
@@ -200,9 +242,19 @@ final class CameraPipeline: NSObject, ObservableObject {
         }
 
         currentDevice = device
+        let supportedModes = Self.supportedModes(on: device)
+        DispatchQueue.main.async {
+            self.supportedModeIDs = Set(supportedModes.map { $0.id })
+        }
 
-        try configureAutomaticCameraFeatures(on: device)
-        try configureFrameRate(on: device)
+        session.beginConfiguration()
+        defer { session.commitConfiguration() }
+
+        if session.canSetSessionPreset(.inputPriority) {
+            session.sessionPreset = .inputPriority
+        }
+
+        let mode = try configureDeviceForSelectedMode(device, supportedModes: supportedModes)
 
         let input = try AVCaptureDeviceInput(device: device)
         guard session.canAddInput(input) else { throw CameraPipelineError.cannotAddInput }
@@ -218,26 +270,31 @@ final class CameraPipeline: NSObject, ObservableObject {
         guard session.canAddOutput(output) else { throw CameraPipelineError.cannotAddOutput }
         session.addOutput(output)
 
-        if let connection = output.connection(with: .video) {
-            if connection.isVideoStabilizationSupported {
-                connection.preferredVideoStabilizationMode = .off
-            }
+        if let connection = output.connection(with: .video), connection.isVideoStabilizationSupported {
+            connection.preferredVideoStabilizationMode = .off
         }
 
-        streamServer.updateHello(
-            width: selectedResolution.nominalWidth,
-            height: selectedResolution.nominalHeight,
-            fps: selectedFrameRate.rawValue
-        )
-        DispatchQueue.main.async {
-            self.captureStatus = "\(self.selectedResolution.nominalWidth)x\(self.selectedResolution.nominalHeight) \(self.selectedFrameRate.rawValue)fps"
-        }
+        publishActiveMode(mode)
         configured = true
     }
 
-    private func configureAutomaticCameraFeatures(on device: AVCaptureDevice) throws {
+    private func configureDeviceForSelectedMode(
+        _ device: AVCaptureDevice,
+        supportedModes: [RawVideoMode]? = nil
+    ) throws -> RawVideoMode {
+        let modes = supportedModes ?? Self.supportedModes(on: device)
+        guard !modes.isEmpty else { throw CameraPipelineError.noSupportedMode }
+
+        let selectedMode = RawVideoMode(resolution: selectedResolution, frameRate: selectedFrameRate)
+        let mode = modes.contains(selectedMode) ? selectedMode : modes[0]
+        guard let format = Self.format(on: device, for: mode) else { throw CameraPipelineError.noSupportedMode }
+
         try device.lockForConfiguration()
         defer { device.unlockForConfiguration() }
+
+        device.activeFormat = format
+        device.activeVideoMinFrameDuration = mode.frameRate.frameDuration
+        device.activeVideoMaxFrameDuration = mode.frameRate.frameDuration
 
         if device.isFocusModeSupported(.continuousAutoFocus) {
             device.focusMode = .continuousAutoFocus
@@ -251,29 +308,100 @@ final class CameraPipeline: NSObject, ObservableObject {
         if device.isSmoothAutoFocusSupported {
             device.isSmoothAutoFocusEnabled = true
         }
+
+        if mode != selectedMode {
+            DispatchQueue.main.async {
+                self.selectedResolution = mode.resolution
+                self.selectedFrameRate = mode.frameRate
+            }
+        }
+
+        return mode
     }
 
-    private func configureFrameRate(on device: AVCaptureDevice) throws {
-        try device.lockForConfiguration()
-        defer { device.unlockForConfiguration() }
+    private func publishActiveMode(_ mode: RawVideoMode) {
+        modeLock.lock()
+        currentMode = mode
+        modeLock.unlock()
 
-        let targetFrameDuration = selectedFrameRate.frameDuration
-        device.activeVideoMinFrameDuration = targetFrameDuration
-        device.activeVideoMaxFrameDuration = targetFrameDuration
+        streamServer.updateMode(mode, supportedModes: Self.supportedModes(on: currentDevice))
+    }
+
+    private func readCurrentMode() -> RawVideoMode {
+        modeLock.lock()
+        defer { modeLock.unlock() }
+        return currentMode
+    }
+
+    private static func supportedModes(on device: AVCaptureDevice?) -> [RawVideoMode] {
+        guard let device else { return RawVideoMode.preferredOrder }
+        let supported = RawVideoMode.preferredOrder.filter { format(on: device, for: $0) != nil }
+        return supported.isEmpty ? [] : supported
+    }
+
+    private static func format(on device: AVCaptureDevice, for mode: RawVideoMode) -> AVCaptureDevice.Format? {
+        let matching = device.formats.filter { format in
+            let description = format.formatDescription
+            let dimensions = CMVideoFormatDescriptionGetDimensions(description)
+            guard Int(dimensions.width) == mode.width, Int(dimensions.height) == mode.height else {
+                return false
+            }
+
+            let pixelFormat = CMFormatDescriptionGetMediaSubType(description)
+            guard pixelFormat == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange ||
+                    pixelFormat == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange else {
+                return false
+            }
+
+            return format.videoSupportedFrameRateRanges.contains { range in
+                range.minFrameRate <= Double(mode.fps) && range.maxFrameRate >= Double(mode.fps)
+            }
+        }
+
+        return matching.sorted { lhs, rhs in
+            let lhsMax = lhs.videoSupportedFrameRateRanges.map { $0.maxFrameRate }.max() ?? 0
+            let rhsMax = rhs.videoSupportedFrameRateRanges.map { $0.maxFrameRate }.max() ?? 0
+            return lhsMax < rhsMax
+        }.first
+    }
+
+    private func recordCapturedFrame(mode: RawVideoMode) {
+        captureStatsFrames += 1
+        let elapsed = Date().timeIntervalSince(captureStatsStart)
+        guard elapsed >= 1 else { return }
+
+        let fps = Double(captureStatsFrames) / elapsed
+        captureStatsFrames = 0
+        captureStatsStart = Date()
+
+        let roundedFps = Int(fps.rounded())
+        DispatchQueue.main.async {
+            self.captureStatus = "\(mode.label) raw \(roundedFps) fps"
+        }
     }
 }
 
 extension CameraPipeline: AVCaptureVideoDataOutputSampleBufferDelegate {
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
         guard let imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer),
-              let frame = Self.copyNV12Frame(from: imageBuffer) else {
+              let frame = Self.copyNV12Frame(from: imageBuffer, fps: readCurrentMode().fps) else {
             return
         }
 
+        let mode = readCurrentMode()
+        if frame.width != mode.width || frame.height != mode.height {
+            let actualMode = RawVideoMode(
+                resolution: OutputResolution.allCases.first { $0.width == frame.width && $0.height == frame.height } ?? mode.resolution,
+                frameRate: mode.frameRate
+            )
+            publishActiveMode(actualMode)
+        }
+
+        recordCapturedFrame(mode: readCurrentMode())
         streamServer.broadcast(frame)
     }
 
-    private static func copyNV12Frame(from imageBuffer: CVPixelBuffer) -> Data? {
+    private static func copyNV12Frame(from imageBuffer: CVPixelBuffer, fps: Int) -> RawVideoFrame? {
         CVPixelBufferLockBaseAddress(imageBuffer, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(imageBuffer, .readOnly) }
 
@@ -290,7 +418,8 @@ extension CameraPipeline: AVCaptureVideoDataOutputSampleBufferDelegate {
         let yRows = CVPixelBufferGetHeightOfPlane(imageBuffer, 0)
         let uvRows = CVPixelBufferGetHeightOfPlane(imageBuffer, 1)
 
-        guard yRows == height, uvRows == height / 2 else {
+        guard width > 0, height > 0, width % 2 == 0, height % 2 == 0,
+              yRows == height, uvRows == height / 2 else {
             return nil
         }
 
@@ -310,12 +439,20 @@ extension CameraPipeline: AVCaptureVideoDataOutputSampleBufferDelegate {
             }
         }
 
-        return frame
+        return RawVideoFrame(
+            payload: frame,
+            width: width,
+            height: height,
+            fps: fps,
+            lumaStride: width,
+            capturedAtNs: DispatchTime.now().uptimeNanoseconds
+        )
     }
 }
 
 enum CameraPipelineError: LocalizedError {
     case noCamera
+    case noSupportedMode
     case cannotAddInput
     case cannotAddOutput
 
@@ -323,6 +460,8 @@ enum CameraPipelineError: LocalizedError {
         switch self {
         case .noCamera:
             "No rear camera found"
+        case .noSupportedMode:
+            "This iPhone camera does not expose a supported raw NV12 mode"
         case .cannotAddInput:
             "Could not add camera input"
         case .cannotAddOutput:
