@@ -9,6 +9,7 @@ $ErrorActionPreference = "Stop"
 
 $RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 $ProjectPath = Join-Path $RepoRoot "WindowsCamReceiver\WindowsCamReceiver.csproj"
+$VirtualCameraToolProject = Join-Path $RepoRoot "WindowsCam.VirtualCamera.Tool\WindowsCam.VirtualCamera.Tool.vcxproj"
 $PublishDir = Join-Path $RepoRoot "packaging\dist\publish\$Runtime"
 $InstallerScript = Join-Path $RepoRoot "packaging\WindowsCamReceiver.iss"
 $ToolsSource = Join-Path $RepoRoot "WindowsCamReceiver\Tools"
@@ -54,6 +55,18 @@ dotnet publish $ProjectPath `
     -p:PublishSingleFile=true `
     -p:IncludeNativeLibrariesForSelfExtract=true `
     --output $PublishDir
+
+$msbuild = Get-Command "MSBuild.exe" -ErrorAction SilentlyContinue
+if ($msbuild -and (Test-Path $VirtualCameraToolProject)) {
+    & $msbuild.Source $VirtualCameraToolProject /p:Configuration=Release /p:Platform=x64 /m
+    $toolOutput = Join-Path $RepoRoot "WindowsCam.VirtualCamera.Tool\x64\Release\WindowsCam.VirtualCamera.Tool.exe"
+    if (Test-Path $toolOutput) {
+        Copy-Item -Force -Path $toolOutput -Destination $PublishDir
+    }
+}
+else {
+    Write-Host "MSBuild.exe was not found; native virtual camera tool was not built."
+}
 
 Copy-Item -Force -Path (Join-Path $RepoRoot "WindowsCamReceiver\WINDOWS_INSTALL.md") -Destination $PublishDir
 Copy-Item -Force -Path (Join-Path $RepoRoot "README.md") -Destination $PublishDir

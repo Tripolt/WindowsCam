@@ -1,5 +1,5 @@
-#define AppName "WindowsCam Receiver"
-#define AppVersion "0.1.0"
+#define AppName "WindowsCam"
+#define AppVersion "0.2.0"
 #define AppPublisher "Matteo Tripolt"
 #define AppExeName "WindowsCamReceiver.exe"
 
@@ -8,8 +8,8 @@ AppId={{1FA3FD75-95A7-4DA4-8AA3-6AC143F4B8F7}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher={#AppPublisher}
-DefaultDirName={autopf}\WindowsCam Receiver
-DefaultGroupName=WindowsCam Receiver
+DefaultDirName={autopf}\WindowsCam
+DefaultGroupName=WindowsCam
 DisableProgramGroupPage=yes
 OutputDir=dist\installer
 OutputBaseFilename=WindowsCamReceiverSetup-{#AppVersion}
@@ -18,7 +18,7 @@ SolidCompression=yes
 WizardStyle=modern
 ArchitecturesAllowed=x64
 ArchitecturesInstallIn64BitMode=x64
-PrivilegesRequired=lowest
+PrivilegesRequired=admin
 UninstallDisplayIcon={app}\{#AppExeName}
 
 [Languages]
@@ -28,12 +28,16 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Source: "dist\publish\win-x64\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\WindowsCam Receiver"; Filename: "{app}\{#AppExeName}"
+Name: "{group}\WindowsCam"; Filename: "{app}\{#AppExeName}"
 Name: "{group}\Install Guide"; Filename: "{app}\WINDOWS_INSTALL.md"
-Name: "{autodesktop}\WindowsCam Receiver"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon
+Name: "{autodesktop}\WindowsCam"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Shortcuts:"; Flags: unchecked
 
 [Run]
-Filename: "{app}\{#AppExeName}"; Description: "Launch WindowsCam Receiver"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\WindowsCam.VirtualCamera.Tool.exe"; Parameters: "register"; StatusMsg: "Registering WindowsCam virtual camera..."; Flags: runhidden skipifdoesntexist
+Filename: "{app}\{#AppExeName}"; Description: "Launch WindowsCam"; Flags: nowait postinstall skipifsilent
+
+[UninstallRun]
+Filename: "{app}\WindowsCam.VirtualCamera.Tool.exe"; Parameters: "remove"; Flags: runhidden skipifdoesntexist

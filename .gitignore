@@ -1,6 +1,10 @@
 # .NET build output
 WindowsCamReceiver/bin/
 WindowsCamReceiver/obj/
+WindowsCam.VirtualCamera.Tool/.vs/
+WindowsCam.VirtualCamera.Tool/x64/
+WindowsCam.VirtualCamera.Tool/Debug/
+WindowsCam.VirtualCamera.Tool/Release/
 
 # Installer and packaging output
 packaging/dist/

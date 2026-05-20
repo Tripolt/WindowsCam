@@ -45,12 +45,12 @@ final class StreamServer {
                 listener.stateUpdateHandler = { [weak self] state in
                     switch state {
                     case .ready:
-                        self?.emit("USB port \(Self.port)")
+                        self?.emit("PC camera port \(Self.port)")
                     case .failed(let error):
-                        self?.emit("Stream failed: \(error.localizedDescription)")
+                        self?.emit("PC link failed: \(error.localizedDescription)")
                         self?.stop()
                     case .cancelled:
-                        self?.emit("Stream stopped")
+                        self?.emit("PC disconnected")
                     default:
                         break
                     }
@@ -62,7 +62,7 @@ final class StreamServer {
 
                 listener.start(queue: self.queue)
             } catch {
-                self.emit("Stream error: \(error.localizedDescription)")
+                self.emit("PC link error: \(error.localizedDescription)")
             }
         }
     }
@@ -114,7 +114,7 @@ final class StreamServer {
 
             if case .ready = state {
                 self.sendHello(to: client)
-                self.emit("\(self.clients.count) OBS client(s)")
+                self.emit("\(self.clients.count) PC connection(s)")
             }
 
             if case .failed = state {
@@ -180,7 +180,7 @@ final class StreamServer {
 
     private func remove(_ client: StreamClient) {
         clients.removeAll { $0 === client }
-        emit(clients.isEmpty ? "USB port \(Self.port)" : "\(clients.count) OBS client(s)")
+        emit(clients.isEmpty ? "PC camera port \(Self.port)" : "\(clients.count) PC connection(s)")
     }
 
     private func emit(_ status: String) {

@@ -58,8 +58,8 @@ enum OutputFrameRate: Int, CaseIterable, Identifiable {
 final class CameraPipeline: NSObject, ObservableObject {
     @Published private(set) var isRunning = false
     @Published private(set) var captureStatus = "Camera idle"
-    @Published private(set) var streamStatus = "Stream idle"
-    @Published var selectedResolution: OutputResolution = .uhd4K
+    @Published private(set) var streamStatus = "PC disconnected"
+    @Published var selectedResolution: OutputResolution = .fhd1080
     @Published var selectedFrameRate: OutputFrameRate = .fps30
 
     let session = AVCaptureSession()
@@ -154,7 +154,7 @@ final class CameraPipeline: NSObject, ObservableObject {
                 UIApplication.shared.isIdleTimerDisabled = false
                 self.isRunning = false
                 self.captureStatus = "Camera stopped"
-                self.streamStatus = "Stream stopped"
+                self.streamStatus = "PC disconnected"
             }
         }
     }

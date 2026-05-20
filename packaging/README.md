@@ -17,6 +17,8 @@ packaging\dist\installer
 ## Requirements
 
 - .NET 8 SDK
+- Visual Studio 2022 C++ build tools for `WindowsCam.VirtualCamera.Tool.exe`
+- Windows SDK with `mfvirtualcamera.h`
 - Inno Setup 6, unless using `-SkipInstaller`
 
 The published app is self-contained, so people who install the receiver do not need to install the .NET runtime separately.
@@ -54,3 +56,5 @@ This creates a portable published app under:
 ```text
 packaging\dist\publish\win-x64
 ```
+
+The installer runs `WindowsCam.VirtualCamera.Tool.exe register` during install and `remove` during uninstall, so the installer requires administrator rights.

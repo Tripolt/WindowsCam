@@ -206,7 +206,7 @@ struct ContentView: View {
         GlassEffectContainer(spacing: 8) {
             VStack(spacing: 16) {
                 HStack {
-                    Label("Output", systemImage: "arrow.up.right.video")
+                    Label("Camera Output", systemImage: "arrow.up.right.video")
                         .font(.subheadline.weight(.bold))
                         .foregroundStyle(.white)
                     Spacer()
@@ -261,7 +261,7 @@ struct ContentView: View {
     private var landscapeSettingsPanel: some View {
         VStack(spacing: 12) {
             HStack {
-                Text("Output")
+                Text("Camera Output")
                     .font(.caption.weight(.bold))
                     .foregroundStyle(.white)
                 Spacer()

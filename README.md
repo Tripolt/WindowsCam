@@ -1,13 +1,15 @@
 # windowsCam
 
-windowsCam turns an iPhone into a high-quality cabled camera source for OBS on Windows.
+windowsCam turns an iPhone into a cabled Windows 11 virtual camera named `WindowsCam`.
+
+The camera is intended to show up in Teams, Zoom, browsers, and OBS as a normal camera source. In OBS, add it with **Video Capture Device**, not Media Source.
 
 ## What is implemented
 
 - iPhone app:
   - rear camera capture with AVFoundation
   - continuous autofocus, auto exposure, and auto white balance
-  - 4K30 capture when supported, falling back to 1080p/high presets
+  - 1080p30 default, with 720p30 and 4K30 available
   - hardware H.264 encoding with VideoToolbox
   - TCP stream on port `48650`
   - length-prefixed protocol with a JSON hello packet followed by H.264 Annex B frames
@@ -15,9 +17,22 @@ windowsCam turns an iPhone into a high-quality cabled camera source for OBS on W
 - Windows receiver:
   - WinForms app targeting `.NET 8`
   - launches `iproxy.exe` to bridge USB to the iPhone app
-  - launches `ffmpeg.exe` to publish the H.264 stream to OBS as MPEG-TS over UDP
-  - OBS input URL: `udp://127.0.0.1:48651`
-  - includes an Inno Setup installer packaging path
+  - launches `ffmpeg.exe` only as a local H.264 decoder
+  - publishes latest decoded NV12 frames to `%ProgramData%\WindowsCam\latest-frame.mmf`
+  - drops stale encoded frames to keep latency live
+  - includes a native Windows 11 `MFCreateVirtualCamera` registration tool project
+
+- Native virtual camera boundary:
+  - camera name: `WindowsCam`
+  - source CLSID: `{D9E25520-0B1B-4CE2-9C8E-6F9B4698B1D5}`
+  - intended formats: `3840x2160 30fps`, `1920x1080 30fps`, `1280x720 30fps`, NV12
+  - broker contract documented in `WindowsCam.VirtualCamera.Source`
+
+## Current native-camera status
+
+The receiver-side frame broker and Windows 11 virtual camera registration tool are in place. The remaining native work is the Media Foundation Custom Media Source COM DLL that implements the CLSID above and reads `%ProgramData%\WindowsCam\latest-frame.mmf`.
+
+Windows apps will not receive video until that COM DLL is implemented, registered, and bundled with the installer.
 
 ## iPhone setup
 
@@ -29,22 +44,23 @@ windowsCam turns an iPhone into a high-quality cabled camera source for OBS on W
 
 ## Windows setup for users
 
-1. Run the `WindowsCamReceiverSetup-*.exe` installer.
-2. Install OBS Studio if needed.
-3. Install or place these tools either in `PATH` or in the installed app's `Tools` folder:
-   - `iproxy.exe`
-   - `idevice_id.exe` and `idevicename.exe` from libimobiledevice, optional but useful for device detection
-   - `ffmpeg.exe`
-4. Run WindowsCamReceiver and click Start.
-5. In OBS, add a Media Source and set the input to:
+1. Run the WindowsCam installer as administrator.
+2. Connect the iPhone by cable and trust the computer.
+3. Open the iPhone app and keep it running.
+4. Run WindowsCam and click Start.
+5. Select `WindowsCam` in Teams, Zoom, your browser, or OBS.
 
-```text
-udp://127.0.0.1:48651
-```
+For OBS, add a **Video Capture Device** and choose `WindowsCam`. Use 4K in OBS by selecting the 3840x2160 camera format when available.
 
-Then start OBS Virtual Camera if you want other Windows apps to see it.
+## Helper tools
 
-For lowest latency in OBS, disable `Local File`, set `Input Format` to `mpegts` if available, and set `Network Buffering` / `Netzwerkpufferung` to `0 MB`. The receiver is designed to drop stale frames instead of accumulating seconds of delay.
+The receiver needs:
+
+- `iproxy.exe`
+- `ffmpeg.exe`
+- optional: `idevice_id.exe` and `idevicename.exe`
+
+Place them in the installed app's `Tools` folder or add them to `PATH`.
 
 ## Building the Windows installer
 
@@ -57,21 +73,11 @@ Run this on Windows:
 Requirements:
 
 - .NET 8 SDK
+- Visual Studio 2022 C++ build tools
+- Windows SDK with `mfvirtualcamera.h`
 - Inno Setup 6
 
 The installer output is written to `packaging\dist\installer`.
-
-The app is published self-contained, so the installed receiver does not require a separate .NET runtime. To bundle helper tools into the installer, place `ffmpeg.exe`, `iproxy.exe`, and optional libimobiledevice helper executables in `WindowsCamReceiver\Tools` before packaging, or run:
-
-```powershell
-.\packaging\Build-Installer.ps1 -IncludeLocalTools
-```
-
-For a portable build without an installer:
-
-```powershell
-.\packaging\Build-Installer.ps1 -SkipInstaller
-```
 
 ## Protocol
 
@@ -83,8 +89,8 @@ The first packet is JSON:
 {
   "version": 1,
   "codec": "h264-annexb",
-  "width": 3840,
-  "height": 2160,
+  "width": 1920,
+  "height": 1080,
   "fps": 30,
   "orientation": "landscapeRight",
   "framing": "uint32be-length-prefixed"

@@ -1,37 +1,30 @@
-# WindowsCam Receiver Install Guide
+# WindowsCam Install Guide
 
 ## Quick Start
 
-1. Install the WindowsCam Receiver installer.
-2. Install OBS Studio if it is not installed already.
-3. Make sure the helper tools are available:
-   - `ffmpeg.exe`
+1. Install WindowsCam as administrator.
+2. Make sure helper tools are available:
    - `iproxy.exe`
+   - `ffmpeg.exe`
    - optional: `idevice_id.exe` and `idevicename.exe`
-4. Put helper tools in either:
-   - `C:\Program Files\WindowsCam Receiver\Tools`
+3. Put helper tools in either:
+   - `C:\Program Files\WindowsCam\Tools`
    - any folder already on your `PATH`
-5. Open the iPhone app, keep it running, and connect the iPhone by cable.
-6. Start WindowsCam Receiver.
-7. In OBS, add a Media Source with this input:
+4. Open the iPhone app, keep it running, and connect the iPhone by cable.
+5. Start WindowsCam.
+6. Select `WindowsCam` in Teams, Zoom, browsers, or OBS.
 
-```text
-udp://127.0.0.1:48651
-```
+In OBS, add **Video Capture Device** and choose `WindowsCam`. Do not add a Media Source URL.
 
-For lowest latency, use OBS's Media Source, not Browser Source, and set Network Buffering to `0 ms` if the option is available.
+## 4K in OBS
 
-## Low-latency OBS settings
+The virtual camera target formats are:
 
-In the OBS Media Source settings:
+- `3840x2160 30fps`
+- `1920x1080 30fps`
+- `1280x720 30fps`
 
-- Disable `Local File`.
-- Set `Input` to `udp://127.0.0.1:48651`.
-- Set `Input Format` to `mpegts` if your OBS version shows that field.
-- Set `Network Buffering` / `Netzwerkpufferung` to `0 MB`.
-- Keep `Restart playback when source becomes active` enabled.
-
-The receiver is tuned for live output and will drop stale frames instead of letting delay grow. If the log reports dropped frames or ffmpeg falling behind, the stream should recover on the next keyframe.
+Teams and Zoom usually prefer 1080p or lower. OBS can request the 4K format from the Video Capture Device properties when the native Media Foundation source is installed.
 
 ## iPhone Trust
 
@@ -39,8 +32,22 @@ If the receiver cannot find the iPhone, unlock the iPhone, unplug and reconnect 
 
 ## Tools
 
-`ffmpeg.exe` publishes the incoming H.264 stream to OBS.
-
 `iproxy.exe` forwards the iPhone app's USB-muxed TCP port to Windows localhost. It is normally provided by libimobiledevice builds for Windows.
 
-The installer can bundle these tools if they are placed in `WindowsCamReceiver\Tools` before packaging.
+`ffmpeg.exe` decodes the incoming H.264 stream to NV12 frames for the virtual camera broker. It no longer publishes anything to OBS.
+
+## Native Camera Component
+
+WindowsCam uses the Windows 11 Media Foundation virtual camera API. The installer must bundle:
+
+- `WindowsCamReceiver.exe`
+- `WindowsCam.VirtualCamera.Tool.exe`
+- the native Custom Media Source COM DLL for CLSID `{D9E25520-0B1B-4CE2-9C8E-6F9B4698B1D5}`
+
+The receiver writes the latest decoded frame to:
+
+```text
+%ProgramData%\WindowsCam\latest-frame.mmf
+```
+
+The Custom Media Source reads that frame and serves it to Windows camera clients.
