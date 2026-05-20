@@ -87,6 +87,9 @@ final class StreamServer {
                 orientation: "landscapeRight",
                 framing: "uint32be-length-prefixed"
             )
+
+            self.clients.forEach { $0.connection.cancel() }
+            self.clients.removeAll()
         }
     }
 

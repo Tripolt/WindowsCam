@@ -136,19 +136,25 @@ HRESULT SimpleFrameGenerator::CreateFrame(
 
 HRESULT SimpleFrameGenerator::_OpenBrokerMapping()
 {
-    if (m_brokerView)
-    {
-        return S_OK;
-    }
-
     wchar_t programData[MAX_PATH]{};
     RETURN_HR_IF(E_FAIL, GetEnvironmentVariableW(L"ProgramData", programData, ARRAYSIZE(programData)) == 0);
 
     wchar_t framePath[MAX_PATH]{};
     RETURN_HR_IF(E_FAIL, FAILED(StringCchPrintfW(framePath, ARRAYSIZE(framePath), L"%s\\WindowsCam\\latest-frame.mmf", programData)));
 
-    constexpr DWORD maxPayloadBytes = 3840 * 2160 * 3 / 2;
-    m_mappedBytes = kFrameHeaderBytes + maxPayloadBytes;
+    if (m_brokerView)
+    {
+        LARGE_INTEGER fileSize{};
+        if (GetFileSizeEx(m_brokerFile.get(), &fileSize) && fileSize.QuadPart == m_mappedBytes)
+        {
+            return S_OK;
+        }
+
+        m_brokerView.reset();
+        m_brokerMapping.reset();
+        m_brokerFile.reset();
+        m_mappedBytes = 0;
+    }
 
     m_brokerFile.reset(CreateFileW(
         framePath,
@@ -160,12 +166,18 @@ HRESULT SimpleFrameGenerator::_OpenBrokerMapping()
         nullptr));
     RETURN_LAST_ERROR_IF(!m_brokerFile);
 
+    LARGE_INTEGER fileSize{};
+    RETURN_IF_WIN32_BOOL_FALSE(GetFileSizeEx(m_brokerFile.get(), &fileSize));
+    RETURN_HR_IF(HRESULT_FROM_WIN32(ERROR_INVALID_DATA), fileSize.QuadPart < kFrameHeaderBytes);
+    RETURN_HR_IF(HRESULT_FROM_WIN32(ERROR_INVALID_DATA), fileSize.QuadPart > 0xFFFFFFFFLL);
+    m_mappedBytes = static_cast<DWORD>(fileSize.QuadPart);
+
     m_brokerMapping.reset(CreateFileMappingW(
         m_brokerFile.get(),
         nullptr,
         PAGE_READONLY,
         0,
-        m_mappedBytes,
+        0,
         nullptr));
     RETURN_LAST_ERROR_IF(!m_brokerMapping);
 
@@ -174,7 +186,7 @@ HRESULT SimpleFrameGenerator::_OpenBrokerMapping()
         FILE_MAP_READ,
         0,
         0,
-        m_mappedBytes)));
+        0)));
     RETURN_LAST_ERROR_IF(!m_brokerView);
 
     return S_OK;
