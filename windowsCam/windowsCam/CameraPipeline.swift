@@ -10,8 +10,6 @@ enum OutputResolution: String, CaseIterable, Identifiable {
     case fhd1080 = "1080p"
     case hd720   = "720p"
 
-    static let allCases: [OutputResolution] = [.hd720]
-
     var id: String { rawValue }
 
     var sessionPreset: AVCaptureSession.Preset {
@@ -61,7 +59,7 @@ final class CameraPipeline: NSObject, ObservableObject {
     @Published private(set) var isRunning = false
     @Published private(set) var captureStatus = "Camera idle"
     @Published private(set) var streamStatus = "PC disconnected"
-    @Published var selectedResolution: OutputResolution = .hd720
+    @Published var selectedResolution: OutputResolution = .fhd1080
     @Published var selectedFrameRate: OutputFrameRate = .fps30
 
     let session = AVCaptureSession()

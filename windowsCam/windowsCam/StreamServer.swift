@@ -22,8 +22,8 @@ final class StreamServer {
     private var latestHello = StreamHello(
         version: 1,
         codec: "nv12-raw",
-        width: 1280,
-        height: 720,
+        width: 1920,
+        height: 1080,
         fps: 30,
         orientation: "landscapeRight",
         framing: "uint32be-length-prefixed"

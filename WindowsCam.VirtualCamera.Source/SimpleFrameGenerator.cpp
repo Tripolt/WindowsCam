@@ -21,6 +21,53 @@ namespace
         INT64 TimestampUnixMs;
         BYTE Reserved[16];
     };
+
+    void CopyOrScaleNV12(
+        const BYTE* source,
+        UINT32 sourceWidth,
+        UINT32 sourceHeight,
+        BYTE* destination,
+        LONG destinationPitch,
+        UINT32 destinationWidth,
+        UINT32 destinationHeight)
+    {
+        const BYTE* sourceY = source;
+        const BYTE* sourceUv = source + sourceWidth * sourceHeight;
+        BYTE* destinationY = destination;
+        BYTE* destinationUv = destination + destinationPitch * destinationHeight;
+
+        for (UINT32 y = 0; y < destinationHeight; y++)
+        {
+            const UINT32 sourceYRow = static_cast<UINT32>((static_cast<UINT64>(y) * sourceHeight) / destinationHeight);
+            CopyMemory(
+                destinationY + y * destinationPitch,
+                sourceY + sourceYRow * sourceWidth,
+                min(sourceWidth, destinationWidth));
+
+            if (sourceWidth != destinationWidth)
+            {
+                BYTE* row = destinationY + y * destinationPitch;
+                for (UINT32 x = 0; x < destinationWidth; x++)
+                {
+                    const UINT32 sourceX = static_cast<UINT32>((static_cast<UINT64>(x) * sourceWidth) / destinationWidth);
+                    row[x] = sourceY[sourceYRow * sourceWidth + sourceX];
+                }
+            }
+        }
+
+        for (UINT32 y = 0; y < destinationHeight / 2; y++)
+        {
+            const UINT32 sourceUvRow = static_cast<UINT32>((static_cast<UINT64>(y) * (sourceHeight / 2)) / (destinationHeight / 2));
+            BYTE* row = destinationUv + y * destinationPitch;
+            for (UINT32 x = 0; x < destinationWidth; x += 2)
+            {
+                const UINT32 sourcePair = static_cast<UINT32>((static_cast<UINT64>(x / 2) * (sourceWidth / 2)) / (destinationWidth / 2));
+                const BYTE* sourcePixel = sourceUv + sourceUvRow * sourceWidth + sourcePair * 2;
+                row[x] = sourcePixel[0];
+                row[x + 1] = sourcePixel[1];
+            }
+        }
+    }
 }
 
 HRESULT SimpleFrameGenerator::Initialize(_In_ IMFMediaType* pMediaType)
@@ -71,19 +118,8 @@ HRESULT SimpleFrameGenerator::CreateFrame(
             }
             else
             {
-                const BYTE* srcY = m_lastFrame.data();
-                BYTE* dstY = pBuf;
-                for (UINT32 row = 0; row < m_height; row++)
-                {
-                    CopyMemory(dstY + row * pitch, srcY + row * m_width, m_width);
-                }
-
-                const BYTE* srcUv = m_lastFrame.data() + m_width * m_height;
-                BYTE* dstUv = pBuf + pitch * m_height;
-                for (UINT32 row = 0; row < m_height / 2; row++)
-                {
-                    CopyMemory(dstUv + row * pitch, srcUv + row * m_width, m_width);
-                }
+                RETURN_HR_IF(HRESULT_FROM_WIN32(ERROR_INVALID_DATA), m_lastFrameWidth == 0 || m_lastFrameHeight == 0);
+                CopyOrScaleNV12(m_lastFrame.data(), m_lastFrameWidth, m_lastFrameHeight, pBuf, pitch, m_width, m_height);
             }
         }
     }
@@ -111,8 +147,8 @@ HRESULT SimpleFrameGenerator::_OpenBrokerMapping()
     wchar_t framePath[MAX_PATH]{};
     RETURN_HR_IF(E_FAIL, FAILED(StringCchPrintfW(framePath, ARRAYSIZE(framePath), L"%s\\WindowsCam\\latest-frame.mmf", programData)));
 
-    const DWORD payloadBytes = m_width * m_height * 3 / 2;
-    m_mappedBytes = kFrameHeaderBytes + payloadBytes;
+    constexpr DWORD maxPayloadBytes = 3840 * 2160 * 3 / 2;
+    m_mappedBytes = kFrameHeaderBytes + maxPayloadBytes;
 
     m_brokerFile.reset(CreateFileW(
         framePath,
@@ -158,12 +194,14 @@ HRESULT SimpleFrameGenerator::_CreateNV12FrameFromBroker(
     CopyMemory(&header, m_brokerView.get(), sizeof(header));
     RETURN_HR_IF(HRESULT_FROM_WIN32(ERROR_INVALID_DATA), header.Magic != kFrameMagic);
     RETURN_HR_IF(HRESULT_FROM_WIN32(ERROR_INVALID_DATA), header.Version != 1);
-    RETURN_HR_IF(HRESULT_FROM_WIN32(ERROR_INVALID_DATA), header.Width != static_cast<INT32>(m_width));
-    RETURN_HR_IF(HRESULT_FROM_WIN32(ERROR_INVALID_DATA), header.Height != static_cast<INT32>(m_height));
-    RETURN_HR_IF(HRESULT_FROM_WIN32(ERROR_INVALID_DATA), header.LumaStride != static_cast<INT32>(m_width));
+    RETURN_HR_IF(HRESULT_FROM_WIN32(ERROR_INVALID_DATA), header.Width <= 0 || header.Height <= 0);
+    RETURN_HR_IF(HRESULT_FROM_WIN32(ERROR_INVALID_DATA), header.Width % 2 != 0 || header.Height % 2 != 0);
+    RETURN_HR_IF(HRESULT_FROM_WIN32(ERROR_INVALID_DATA), header.LumaStride != header.Width);
     RETURN_HR_IF(HRESULT_FROM_WIN32(ERROR_RETRY), header.Sequence <= 0);
 
-    const DWORD payloadBytes = m_width * m_height * 3 / 2;
+    const auto sourceWidth = static_cast<UINT32>(header.Width);
+    const auto sourceHeight = static_cast<UINT32>(header.Height);
+    const DWORD payloadBytes = sourceWidth * sourceHeight * 3 / 2;
     RETURN_HR_IF(HRESULT_FROM_WIN32(ERROR_INVALID_DATA), header.PayloadBytes != static_cast<INT32>(payloadBytes));
     RETURN_HR_IF(HRESULT_FROM_WIN32(ERROR_INVALID_DATA), m_mappedBytes < kFrameHeaderBytes + payloadBytes);
     RETURN_HR_IF(HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER), len < static_cast<DWORD>(pitch) * m_height + static_cast<DWORD>(pitch) * m_height / 2);
@@ -174,20 +212,10 @@ HRESULT SimpleFrameGenerator::_CreateNV12FrameFromBroker(
         m_lastFrame.resize(payloadBytes);
     }
     CopyMemory(m_lastFrame.data(), frameStart, payloadBytes);
+    m_lastFrameWidth = sourceWidth;
+    m_lastFrameHeight = sourceHeight;
 
-    const BYTE* srcY = m_lastFrame.data();
-    BYTE* dstY = pBuf;
-    for (UINT32 row = 0; row < m_height; row++)
-    {
-        CopyMemory(dstY + row * pitch, srcY + row * m_width, m_width);
-    }
-
-    const BYTE* srcUv = srcY + m_width * m_height;
-    BYTE* dstUv = pBuf + pitch * m_height;
-    for (UINT32 row = 0; row < m_height / 2; row++)
-    {
-        CopyMemory(dstUv + row * pitch, srcUv + row * m_width, m_width);
-    }
+    CopyOrScaleNV12(m_lastFrame.data(), sourceWidth, sourceHeight, pBuf, pitch, m_width, m_height);
 
     return S_OK;
 }

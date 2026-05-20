@@ -4,8 +4,8 @@
 
 #include "pch.h"
 
-#define NUM_IMAGE_ROWS 720
-#define NUM_IMAGE_COLS 1280
+#define NUM_IMAGE_ROWS 1080
+#define NUM_IMAGE_COLS 1920
 #define BYTES_PER_PIXEL 4
 #define IMAGE_BUFFER_SIZE_BYTES (NUM_IMAGE_ROWS * NUM_IMAGE_COLS * BYTES_PER_PIXEL)
 #define IMAGE_ROW_SIZE_BYTES (NUM_IMAGE_COLS * BYTES_PER_PIXEL)
@@ -27,7 +27,7 @@ namespace winrt::WindowsSample::implementation
         m_dwStreamId = dwStreamId;
         m_allocatorUsage = allocatorUsage;
 
-        const uint32_t NUM_MEDIATYPES = 1;
+        const uint32_t NUM_MEDIATYPES = 3;
         wil::unique_cotaskmem_array_ptr<wil::com_ptr_nothrow<IMFMediaType>> mediaTypeList = wilEx::make_unique_cotaskmem_array<wil::com_ptr_nothrow<IMFMediaType>>(NUM_MEDIATYPES);
 
         const struct
@@ -35,7 +35,9 @@ namespace winrt::WindowsSample::implementation
             UINT32 width;
             UINT32 height;
         } modes[] = {
+            { 1920, 1080 },
             { 1280, 720 },
+            { 3840, 2160 },
         };
 
         for (uint32_t i = 0; i < NUM_MEDIATYPES; i++)

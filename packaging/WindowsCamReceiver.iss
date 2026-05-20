@@ -25,7 +25,7 @@ UninstallDisplayIcon={app}\{#AppExeName}
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Files]
-Source: "dist\publish\win-x64\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "dist\publish\win-x64\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs restartreplace
 
 [Icons]
 Name: "{group}\WindowsCam"; Filename: "{app}\{#AppExeName}"

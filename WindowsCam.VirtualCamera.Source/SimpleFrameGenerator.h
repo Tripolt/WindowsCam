@@ -56,6 +56,8 @@ private:
     wil::unique_handle m_brokerMapping;
     wil::unique_mapview_ptr<BYTE> m_brokerView;
     std::vector<BYTE> m_lastFrame;
+    UINT32 m_lastFrameWidth = 0;
+    UINT32 m_lastFrameHeight = 0;
 
 };
 
